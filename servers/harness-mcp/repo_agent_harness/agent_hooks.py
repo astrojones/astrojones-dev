@@ -11,18 +11,12 @@ blocks legitimate work.
 from __future__ import annotations
 
 import json
-import os
-import re
 import sys
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from repo_agent_harness import git, paths, policies, secrets, serena_gate
-
-if TYPE_CHECKING:
-    from repo_agent_harness.cognee_client import CogneeClient
+from repo_agent_harness import git, paths, policies, secrets
 
 _GUARDED_FILE_TOOLS = {"Read", "Edit", "Write", "NotebookEdit"}
 _EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
@@ -43,48 +37,8 @@ def _deny(reason: str) -> dict:
     }
 
 
-def _is_precise_range_read(tin: dict) -> bool:
-    """Whether a native Read is scoped to an explicit line window (offset and a positive limit).
-
-    Such a read is the ergonomic equivalent of repo_read_range's start/end, so the onboarded gate
-    lets it through instead of forcing symbol navigation for a deliberately bounded slice.
-    """
-    offset, limit = tin.get("offset"), tin.get("limit")
-    return isinstance(offset, int) and isinstance(limit, int) and limit > 0
-
-
-def _serena_gate_blocks(repo: str, path: str, tin: dict | None = None) -> tuple[bool, str]:
-    """Return (blocks, message) deciding whether a native Read of ``path`` is denied.
-
-    Denies whole-file reads of *code* files to keep code discovery on Serena; the message varies by
-    onboarding status (serena_gate.UNBOARDED_MSG vs BOARDED_MSG). Once onboarded, a Read scoped to
-    an explicit line window (offset+limit) is allowed — it is the sanctioned equivalent of
-    repo_read_range. Fails OPEN for non-code files, paths outside the repo, the env escape, or any
-    error. The same predicate gates repo_read_range in server.py, so no ungated whole-file code
-    path is left open.
-    """
-    if serena_gate.gate_disabled():
-        return False, ""
-    try:
-        target = Path(path).resolve()
-        rootp = Path(repo).resolve()
-        onboarded = serena_gate.is_onboarded(rootp)
-    except OSError:
-        return False, ""  # fail open
-    if rootp != target and rootp not in target.parents:
-        return False, ""  # outside the repo — not our concern
-    if not serena_gate.is_code_file(target):
-        return False, ""  # non-code files are always readable
-    # Once onboarded, a bounded window (offset+limit) == repo_read_range; let it through.
-    # Pre-onboarding even a ranged read is blocked, so it can't become a loophole that skips
-    # onboarding (repo_read_range is refused pre-onboarding for exactly that reason).
-    if onboarded and _is_precise_range_read(tin or {}):
-        return False, ""
-    return True, serena_gate.BOARDED_MSG if onboarded else serena_gate.UNBOARDED_MSG
-
-
 def pre_tool_use(data: dict, root: str | None = None) -> dict:
-    """Deny dangerous shell commands, secret-path reads, and ungated code reads via repo policy."""
+    """Deny dangerous shell commands and secret-path reads via repo policy."""
     tool = data.get("tool_name", "")
     tin = data.get("tool_input") or {}
     repo = root or git.repo_root()
@@ -107,10 +61,6 @@ def pre_tool_use(data: dict, root: str | None = None) -> dict:
                 rel = path
             if secrets.is_secret_path(rel, cfg):
                 return _deny(f"Accessing a secret path ('{rel}') is blocked by policy.")
-            if tool == "Read" and repo is not None:
-                blocks, msg = _serena_gate_blocks(repo, path, tin)
-                if blocks:
-                    return _deny(msg)
 
     return {}
 
@@ -227,75 +177,12 @@ def user_prompt_submit(data: dict, root: str | None = None) -> dict:
     return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": digest[:9000]}}
 
 
-# SessionStart recall: the ONE hook allowed a network call, bounded and fail-open. Every
-# other hook stays enqueue-only/local by hard rule — a turn must never block on cognee.
-_RECALL_TIMEOUT_ENV = "REPO_AGENT_HARNESS_RECALL_TIMEOUT_S"
-# Once per session, so a few seconds is acceptable. Recall uses CHUNKS (verbatim chunk
-# retrieval, no server-side synthesis), but a live cold roundtrip still pays TLS + login +
-# vector search; 8s leaves headroom over the observed ~3-4s cold path.
-_RECALL_TIMEOUT_S = 8.0
-_RECALL_TOP_K = 5
-# Opt-in gate for the injected SessionStart cognee recall. Default OFF: CogneeSync still
-# mirrors claude-mem -> cognee, but nothing cognee-derived enters session context until this
-# is set, pending the Phase-6 measurement of whether cognee recall beats claude-mem's own
-# SessionStart window. Truthy values: 1/true/yes/on.
-_RECALL_FLAG_ENV = "COGNEE_CM_RECALL"
-# A GRAPH_COMPLETION answer is one synthesized paragraph, not a short chunk — keep it whole
-# (the section as a whole is still budgeted to 9000 chars in session_start).
-_RECALL_LINE_CHARS = 1200
-_RECALL_MAX_LINES = 8
-
-
 # SessionStart symbol map: a shallow, top-level-only tree of the repo's public shape, so a
 # fresh session orients without a round of discovery reads. Bounded like recall — local and
 # fail-open, never blocking startup.
 _SYMBOLS_LIMIT = 150
 _SYMBOLS_MAX_FILES = 40
 _SYMBOLS_MAX_CHARS = 3500
-
-
-# C0/C1 controls minus tab/newline (legit whitespace, collapsed by the callers); \r is
-# stripped too — carriage returns enable terminal-overwrite tricks in injected context.
-_CONTROL_CHARS_RX = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
-
-
-def _sanitize_line(text: str) -> str:
-    """Neutralize recall text before it enters the injected session context.
-
-    Graph content is externally influenced (captured tool output, ingested docs), so a
-    poisoned line could carry ``<system-reminder>``/hook-style tag sequences that the model
-    would treat as trusted framing. ``<`` becomes U+2039 (single left angle quote): unlike
-    ``&lt;`` it stays readable as plain text (recall is not HTML), while making it
-    impossible to form a tag. Control characters (ANSI escapes, NUL, C1) are stripped so
-    graph content cannot drive the terminal; tab/newline survive as ordinary whitespace.
-    """
-    return _CONTROL_CHARS_RX.sub("", text.replace("<", chr(0x2039)))
-
-
-def _recall_lines(results: object) -> list[str]:
-    """Flatten a mem_search result payload into displayable lines (shape-tolerant).
-
-    Handles the live shapes: a list of per-dataset dicts whose ``search_result`` holds
-    either strings (completion answers) or chunk records with a ``text`` field. Every
-    line passes through :func:`_sanitize_line` — graph content is untrusted input.
-    """
-    if isinstance(results, str):
-        return [_sanitize_line(results.strip())] if results.strip() else []
-    raw: list[object] = []
-    if isinstance(results, list):
-        for r in results:
-            if isinstance(r, dict):
-                sr = r.get("search_result") or r.get("text")
-                raw.extend(sr if isinstance(sr, list) else [sr])
-            else:
-                raw.append(r)
-    lines: list[str] = []
-    for item in raw:
-        text = item.get("text") if isinstance(item, dict) else item
-        line = _sanitize_line(" ".join(str(text).split())) if text else ""
-        if line:
-            lines.append(line[:_RECALL_LINE_CHARS])
-    return lines[:_RECALL_MAX_LINES]
 
 
 def _symbol_lines(result: object) -> list[str]:
@@ -330,61 +217,6 @@ def _symbol_lines(result: object) -> list[str]:
     return lines
 
 
-def _recall_section(name: str, dataset: str | None, client: CogneeClient | None) -> str | None:
-    """Bounded, fail-open durable-memory recall; returns the section text or ``None``.
-
-    ``dataset`` scopes the query to the project's own cognee dataset (from the onboarding
-    marker); ``None`` resolves to the shared DEFAULT_DATASET inside ``mem.search``. Span-all
-    queries no longer exist — the client refuses a datasets-less search, because a shared
-    server also hosts demo/junk datasets that would leak into recall.
-
-    Uses CHUNKS filtered to the ``session_digest`` node set (``capture.CAPTURE_NODE_SET``):
-    verbatim retrieval of this harness's own session digests, no server-side LLM synthesis.
-    The node-set filter is what keeps recall clean — an unfiltered GRAPH_COMPLETION over the
-    whole dataset also drags in cognee's own session-memory/self-improvement chatter (e.g. a
-    stored "Got it."), whereas scoping to ``session_digest`` returns only distilled digests.
-    Filtering verified against the live pgvector deployment.
-
-    Gated behind ``COGNEE_CM_RECALL`` (default off): returns ``None`` immediately unless the
-    flag is set, so cognee-derived text stays out of session context until opted in. Also
-    ``None`` whenever cognee is unconfigured, unreachable, times out, or yields nothing —
-    the caller simply omits the section rather than aborting session start.
-    """
-    from repo_agent_harness import cognee_client  # noqa: PLC0415 - lazy: keep the hooks import-light
-
-    # Master switch off, or recall not opted in (COGNEE_CM_RECALL): cognee text stays out of context.
-    recall_opted_in = (os.environ.get(_RECALL_FLAG_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}
-    if not cognee_client.cognee_runtime_enabled() or not recall_opted_in:
-        return None
-    import asyncio  # noqa: PLC0415 - lazy: keep the sync hot-path hooks import-light
-
-    try:
-        from repo_agent_harness import capture, cognee_client, mem  # noqa: PLC0415 - lazy: pulls in httpx
-        from repo_agent_harness.models import MemSearchIn, MemSearchResult  # noqa: PLC0415 - lazy
-    except ImportError:
-        return None
-    c = client if client is not None else cognee_client.get_client()
-    if not c.configured:
-        return None
-    query = f"Project {name}: recent work, decisions, open threads, and gotchas"
-    inp = MemSearchIn(
-        query=query,
-        search_type="CHUNKS",
-        dataset=dataset,
-        top_k=_RECALL_TOP_K,
-        node_name=list(capture.CAPTURE_NODE_SET),
-    )
-    timeout = float(os.environ.get(_RECALL_TIMEOUT_ENV, _RECALL_TIMEOUT_S))
-    try:
-        out = asyncio.run(asyncio.wait_for(mem.search(inp, client=c), timeout))
-    except Exception:  # noqa: BLE001 - fail-open contract: recall must never break session start
-        return None
-    lines = _recall_lines(out.results) if isinstance(out, MemSearchResult) else []
-    if not lines:
-        return None
-    return f"Durable-memory recall for {name} (cognee):\n- " + "\n- ".join(lines)
-
-
 # Hook-degradation warning (session_start section [0b]). Warn only for the events whose
 # silent death actually degrades a session; session-start is the one running right now.
 # Thresholds are hardcoded by design — this is a tripwire, not a tunable.
@@ -393,11 +225,10 @@ _HEARTBEAT_MIN_SESSIONS = 3  # fresh install: too little history to tell "dead" 
 _HEARTBEAT_STALE_S = 7 * 24 * 3600
 
 
-def session_start(data: dict, client: CogneeClient | None = None, root: str | None = None) -> dict:
+def session_start(data: dict, root: str | None = None) -> dict:
     """Inject session-start ``additionalContext`` from independent, fail-open sections.
 
-    In order: an onboarding nudge (if the repo isn't yet in durable memory), a hook-heartbeat
-    degradation warning, a shallow repo symbol map, and a bounded durable-memory recall. Each
+    In order: a hook-heartbeat degradation warning and a shallow repo symbol map. Each
     section is computed independently and fails open to nothing, so a memory problem never
     delays or breaks session startup. Returns ``{}`` only when every section is empty.
     """
@@ -407,12 +238,6 @@ def session_start(data: dict, client: CogneeClient | None = None, root: str | No
         return {}
     name = Path(repo).name
     sections: list[str] = []
-
-    # [0] Onboarding nudge — independent of cognee reachability/config, so it still fires
-    # when cognee is unconfigured or down.
-    with suppress(Exception):
-        if not paths.is_cognee_onboarded(repo):
-            sections.append("This repo isn't yet onboarded into durable memory — run /astrojones:onboard")
 
     # [0b] Hook-degradation warning — the shims fail open by contract, so a silently dead
     # hook (broken shim, stale venv) leaves no error anywhere; comparing heartbeats at
@@ -444,15 +269,6 @@ def session_start(data: dict, client: CogneeClient | None = None, root: str | No
         lines = _symbol_lines(res)
         if lines:
             sections.append(f"Repo symbol map ({name}):\n- " + "\n- ".join(lines))
-
-    # [2] Durable-memory recall — scoped to the project's dataset via the same resolver the
-    # write paths use (onboarded marker wins, else the shared default), so reads and writes
-    # agree on scope. Contributes nothing when unconfigured/unreachable/empty.
-    from repo_agent_harness import mem  # noqa: PLC0415 - lazy: recall already pulls mem; keep other hooks light
-
-    recall = _recall_section(name, mem.resolve_dataset(repo), client)
-    if recall:
-        sections.append(recall)
 
     if not sections:
         return {}
@@ -493,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
     """Lightweight hook entry: ``python -m repo_agent_harness.agent_hooks <event>``.
 
     The plugin's PreToolUse shim calls this instead of ``repo-agent-harness hook`` so it imports
-    only this module (and git/policies/secrets/serena_gate), not the full CLI graph (gateway,
+    only this module (and git/policies/secrets), not the full CLI graph (gateway,
     health, verify, …) — ~40ms vs ~600ms per tool call. Reads the event JSON on stdin, prints the
     decision JSON, routing through ``dispatch`` (shared with ``cli._hook``) so both entries stamp
     heartbeats. Fail-open by contract: any error prints an empty response and exits 0.
