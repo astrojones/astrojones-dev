@@ -17,10 +17,9 @@ import json
 import logging
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal, override
+from typing import TYPE_CHECKING, Annotated, override
 
 import anyio
-import yaml
 from pydantic import AliasChoices, Field
 
 try:
@@ -31,24 +30,16 @@ except ImportError as exc:  # pragma: no cover
     raise SystemExit(msg) from exc
 
 from repo_agent_harness import (
-    cognee_client,
-    cognee_local,
-    cognee_sync,
     context,
     deploy,
     drift,
-    gateway,
     git,
     health,
     impact,
-    mem,
-    models,
-    paths,
     perception,
     policies,
     prompts_registry,
     scaffold,
-    serena_gate,
     symbols,
     verify,
     watcher,
@@ -63,12 +54,6 @@ if TYPE_CHECKING:
 
 LOG = logging.getLogger(__name__)
 
-# Single owner of the child Serena process; created without connecting (lazy).
-# The root is resolved on the first serena_* call — not here at import time — so the
-# child Serena attaches to the real project even when the server process started
-# elsewhere (e.g. $HOME in a cloud session, before CLAUDE_PROJECT_DIR/cwd is settled).
-_serena = gateway.SerenaGateway(git.repo_root)
-
 
 async def _cancel(task: asyncio.Task | None) -> None:
     """Cancel a lifespan background task and await its exit (no-op on None)."""
@@ -79,62 +64,26 @@ async def _cancel(task: asyncio.Task | None) -> None:
         await task
 
 
-def _ensure_local_if_enabled() -> str | None:
-    """Bring up the local cognee fallback iff enabled; blocking, so run via ``asyncio.to_thread``.
-
-    Both the enablement gate (which probes ``docker info``) and the container boot run
-    subprocesses, so this must never touch the event loop directly.
-    """
-    if not cognee_local.enabled():
-        return None
-    # Generous budget: the first-ever boot on a fresh volume runs alembic migrations and can far
-    # exceed a normal restart. This runs in a background thread, so waiting costs nothing.
-    return cognee_local.ensure_local(300.0)
-
-
-async def _bring_up_local(sync: cognee_sync.CogneeSync) -> None:
-    """Best-effort background bring-up of local cognee; rebuild the client and start the sync loop.
-
-    Never blocks startup: cold boot can take ~15s plus a one-time image pull. The claude-mem
-    store is read past a durable watermark, so anything written before the backend answers is
-    picked up on the next sync cycle — nothing is lost.
-    """
-    base = await asyncio.to_thread(_ensure_local_if_enabled)
-    if not base:
-        return
-    cognee_client.reset_client()
-    rebuilt = cognee_client.get_client()
-    if rebuilt.configured:
-        sync.start(rebuilt)
-
-
 @asynccontextmanager
 async def _lifespan(app: FastMCP) -> AsyncIterator[dict]:
-    """Run the worktree watcher for the server's lifetime and reap Serena on shutdown.
+    """Run the worktree watcher and the perception daemon for the server's lifetime.
 
-    Connecting writes only a one-time Serena ``project_overview`` memory under ``.serena/``
-    (gitignored, like Serena's own symbol index) so the repo is onboarded from session one
-    without depending on the agent running the onboarding ceremony; no other repo files are
-    touched. The ``agent/`` tree and the ``AGENTS.md`` guide are still materialized only on
-    demand via the ``repo_bootstrap`` tool / CLI. The watcher marks the health cache stale on
-    worktree changes; checks only ever run on the next repo_health read. Serena is never
-    started here — only the first serena_* tool call (or diagnostics health check)
-    launches it.
+    The watcher marks the health cache stale on worktree changes; checks only ever run on
+    the next repo_health read. The perception daemon auto-runs cheap checks on change and
+    maintains the snapshot read by repo_state + hooks. Connecting writes nothing into the
+    repo — the ``agent/`` tree and the ``AGENTS.md`` guide are materialized only on demand
+    via the ``repo_bootstrap`` tool / CLI.
     """
     _ = app
     root = git.repo_root()
-    with suppress(Exception):  # best-effort: never let process cleanup block startup
-        gateway.reap_stale_serena_children(root)  # kill orphaned Serena children from prior versions
-    _seed_serena_languages(root)  # ensure every repo language is active before Serena launches
     if root:
         with suppress(Exception):  # best-effort prewarm: tree-sitter/mtime-diff, no network, idempotent
             symbols.refresh(root)  # build the static symbol index now so the first overview is instant
-    _autoseed_onboarding(root)  # one-time, best-effort: onboard the repo before the agent acts
     # a plain task, not a task group: the lifespan generator's yield must not sit
     # inside a cancel scope, or cancelled shutdown exits scopes in the wrong task
     # One watcher, two sinks: keep the lazy health cache honest AND feed the perception daemon,
     # which auto-runs cheap checks on change and maintains the snapshot read by repo_state + hooks.
-    perception_daemon = perception.Perception(root, gateway=_serena) if root else None
+    perception_daemon = perception.Perception(root) if root else None
 
     def _on_repo_change(changed: set[str]) -> None:
         if root is not None:
@@ -144,71 +93,38 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[dict]:
 
     repo_watcher = watcher.RepoWatcher(root, _on_repo_change) if root else None
     watch_task = asyncio.create_task(repo_watcher.run()) if repo_watcher else None
-    # Pre-warm the Serena session in the background so the first code-navigation call
-    # does not pay the full cold-boot (spawn + LSP start) cost while the UI waits.
-    warm_task = _serena.warm() if root else None
     perception_task = asyncio.create_task(perception_daemon.run()) if perception_daemon else None
-    # Memory sync: mirror the read-only claude-mem store into cognee in-process. Only when
-    # configured — a remote now, or a local container once it is up. Local auto-start is opt-in
-    # (COGNEE_LOCAL_ENABLE=1); by default the server never boots local unprompted, so a machine
-    # with a remote it merely failed to inherit can't spin up a split-brain second store.
-    # Gated behind the master switch (default off): a bare main checkout does zero cognee runtime
-    # regardless of inherited env or a stray local endpoint.json. The sync object is built either way
-    # (inert until start(); teardown's sync.stop() on an unstarted sync is a no-op).
-    sync = cognee_sync.CogneeSync(root)
-    local_task = None
-    if cognee_client.cognee_runtime_enabled():
-        cognee = cognee_client.get_client()
-        if cognee.configured:
-            sync.start(cognee)
-        local_task = asyncio.create_task(_bring_up_local(sync)) if root and not cognee.configured else None
     try:
         yield {}
     finally:
-        await _cancel(warm_task)
         if perception_daemon is not None:
             perception_daemon.stop()
         await _cancel(perception_task)
         if repo_watcher is not None:
             repo_watcher.stop()
         await _cancel(watch_task)
-        await _cancel(local_task)
-        await sync.stop()
-        with suppress(RuntimeError):  # defensive: the child dies with our stdio anyway
-            await _serena.aclose()
 
 
 _INSTRUCTIONS = """\
 Safe, repo-aware tools for the git repo at the current working directory: repo facts
-(repo_* tools) and semantic code navigation (serena_* tools, launched on first use).
-
-Onboarding is automatic: the harness seeds the Serena gate at connect, before you act, so
-navigate by symbol immediately — no manual onboarding step is required. `serena_initial_instructions`
-remains available for the Serena navigation manual, but it is not a mandatory first action.
-Durable project memory is a separate, one-time confirmed cognee ingest: run `/astrojones:onboard`
-to deepen it (finalize with `repo_onboard_complete`); day-to-day code reads never wait on it.
+(repo_* tools) and static symbol navigation (repo_symbols_overview).
 
 - Orient in code via repo_symbols_overview (static tree-sitter index — instant, no LSP);
-  use serena_* for the semantic ops the index cannot answer (find_referencing_symbols,
-  find_implementations, diagnostics, renames) and repo_search_*/repo_read_range for files.
-  Read precise ranges; never dump whole files or recursively read the tree. Native
-  Read/Grep are a fallback ONLY when neither can answer — never for code discovery.
+  use repo_search_*/repo_read_range for files. Read precise ranges; never dump whole
+  files or recursively read the tree. Native Read/Grep are a fallback ONLY when neither
+  can answer — never for code discovery.
 - Call repo_context_overview to orient (languages, entrypoints, important paths).
 - In Claude Code, to map an unfamiliar or multi-file region dispatch the `explorer`
-  subagent — it runs this same serena+harness navigation read-only and returns a cited
+  subagent — it runs this same harness navigation read-only and returns a cited
   reading list. It is the harness-native replacement for the built-in `Explore` agent;
   prefer it for any code exploration.
 - Workflow playbooks (bugfix, feature, refactor, test, implement, commit) are served as
   MCP prompts and via repo_prompt_get(name); the implement pipeline coordinates the
   implementer/reviewer/test-runner subagents.
-- Durable memory lives in the remote cognee graph via the mem_* tools: mem_search /
-  mem_rules to recall, mem_remember for single facts, mem_ingest for curated bulk loads
-  (cost-gated), mem_ontology to pin the type vocabulary, mem_doctor when memory misbehaves.
 - Run repo_verify_changed on the files you changed before declaring work done.
 - Shell is policy-bounded: destructive commands and secret-file reads are blocked; git
   push and database migrations need confirmation. Check repo_policy_check_command if unsure.
-- Connecting writes no harness files into the repo (serena keeps its symbol index under
-  `.serena/` on first navigation). Materialization is opt-in: call
+- Connecting writes no harness files into the repo. Materialization is opt-in: call
   repo_bootstrap to write agent/ (editable policies + health) and an AGENTS.md guide — for
   per-repo customization or non-MCP clients (opencode/CI). If repo_context_overview's
   `harness` block already reports harnessed=true with a guide, read it for repo-specific
@@ -216,18 +132,15 @@ to deepen it (finalize with `repo_onboard_complete`); day-to-day code reads neve
 """
 
 
+_TOOL_TIMEOUT_S = 300
+
+
 class ToolTimeoutMiddleware(Middleware):
-    """Bound every tool dispatch with :func:`gateway.tool_timeout` and track it in-flight.
+    """Bound every tool dispatch with a timeout as the generic backstop.
 
-    The Serena proxy path is already bounded inside :meth:`gateway.SerenaGateway.call`; this is
-    the backstop for the generic ``@mcp.tool`` handlers (file/grep/shell) that otherwise have no
-    deadline, so a runaway handler can never starve the host heartbeat. The default
-    :func:`gateway.tool_timeout` sits clear above Serena's own dispatch reap, so for a serena_*
-    call this deadline never fires first — it stays a pure outer backstop.
-
-    Every dispatch is registered into the shared ``_serena`` in-flight registry (the single source
-    of truth, diagnostics #26): generic tools never otherwise touch the gateway, so the middleware
-    is where they become visible to :meth:`gateway.SerenaGateway.in_flight_snapshot`.
+    The default timeout sits clear above any per-tool deadline, so it stays a pure outer
+    backstop: a runaway ``@mcp.tool`` handler (file/grep/shell) can never starve the host
+    heartbeat.
     """
 
     @override
@@ -236,26 +149,22 @@ class ToolTimeoutMiddleware(Middleware):
         context: MiddlewareContext[mt.CallToolRequestParams],
         call_next: CallNext[mt.CallToolRequestParams, ToolResult],
     ) -> ToolResult:
-        """Bound the dispatch, register it in-flight, and log a terminal line either way."""
+        """Bound the dispatch and log a terminal line either way."""
         name = context.message.name
-        timeout = gateway.tool_timeout()
-        cwd = git.repo_root() or str(Path.cwd())
-        with _serena.register_inflight(name, cwd):
-            try:
-                with anyio.fail_after(timeout):
-                    result = await call_next(context)
-            except TimeoutError:
-                LOG.warning("tool %s timed out after %.1fs", name, timeout)
-                raise gateway.ToolTimeoutError(tool=name, timeout_s=timeout) from None
-            LOG.debug("tool %s completed", name)
-            return result
+        timeout = _TOOL_TIMEOUT_S
+        try:
+            with anyio.fail_after(timeout):
+                result = await call_next(context)
+        except TimeoutError:
+            LOG.warning("tool %s timed out after %.1fs", name, timeout)
+            msg = f"tool {name} timed out after {timeout}s"
+            raise TimeoutError(msg) from None
+        LOG.debug("tool %s completed", name)
+        return result
 
 
 mcp = FastMCP("repo-agent-harness", instructions=_INSTRUCTIONS, lifespan=_lifespan)
 mcp.add_middleware(ToolTimeoutMiddleware())
-
-for _proxied in gateway.proxied_tools(_serena):
-    mcp.add_tool(_proxied)
 
 # Per-repo workflow prompts (SSOT). Claude Code clients see them via
 # ``prompts/list``; opencode clients (and any other MCP client that does not
@@ -267,92 +176,6 @@ prompts_registry.register(mcp)
 
 def _no_repo() -> dict:
     return {"error": "not inside a git repository; start the server from a repo root"}
-
-
-def _serena_read_gate(root: str, path: str) -> dict | None:
-    """Refuse a pre-onboarding whole-file *code* read so repo_read_range can't bypass onboarding.
-
-    Returns an onboarding directive (as a normal tool-error dict) when the gate is active, the
-    target is a code file, and the repo is not yet onboarded; otherwise None (proceed). Mirrors
-    the native-Read gate in agent_hooks so the two stay in lockstep — closing the escape observed
-    in session 9e6fd520, where the agent read code via repo_read_range and never onboarded.
-    """
-    if serena_gate.gate_disabled() or not serena_gate.is_code_file(path):
-        return None
-    try:
-        if serena_gate.is_onboarded(Path(root).resolve()):
-            return None
-    except OSError:
-        return None  # fail open: uncertainty must never block a read
-    return {"error": serena_gate.UNBOARDED_MSG, "path": path}
-
-
-_ONBOARD_STUB = "Auto-onboarded at connect; durable project memory lives in cognee — run /astrojones:onboard to deepen."
-
-
-def _seed_serena_languages(root: str | None) -> None:
-    """Ensure ``.serena/project.yml`` lists every language the repo contains, before Serena launches.
-
-    Serena, started with only ``--project``, auto-detects a single dominant language and then
-    *raises* on symbol extraction for files of any other language present in the repo (e.g.
-    ``Cannot extract symbols ... Active languages: ['python']`` for a ``.ts`` file in a
-    Python-dominant repo). A symbol-driven agent then has no anchor and silently writes nothing.
-    Merging the full detected language list in makes the right language servers start.
-
-    Runs at startup before the lazy Serena launch, so the harness config wins the race. Serena
-    writes its own ``project.yml`` (dominant language only), so this *merges* missing languages
-    into an existing list rather than only seeding fresh repos — that is what reaches the repos
-    that already hit the bug. Idempotent (no write when nothing is missing) and best-effort
-    (never raises into startup). The yaml round-trip drops Serena's template comments only on the
-    one merge that actually adds a language; ``.serena/`` is gitignored and regenerable.
-    """
-    if root is None or serena_gate.gate_disabled():
-        return
-    with suppress(OSError, ValueError, yaml.YAMLError):  # best-effort: never raise into startup
-        rootp = Path(root).resolve()
-        wanted = context.serena_languages(root)
-        if not wanted:
-            return
-        cfg = rootp / ".serena" / "project.yml"
-        data: dict = {}
-        if cfg.exists():
-            loaded = yaml.safe_load(cfg.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                data = loaded
-        current = [str(x) for x in data["languages"]] if isinstance(data.get("languages"), list) else []
-        merged = current + [k for k in wanted if k not in current]
-        if merged == current:
-            return
-        data["languages"] = merged
-        data.setdefault("project_name", rootp.name)
-        cfg.parent.mkdir(parents=True, exist_ok=True)
-        cfg.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
-
-
-def _autoseed_onboarding(root: str | None) -> None:
-    """Write an initial Serena project memory on first connect to a not-yet-onboarded repo.
-
-    Onboarding cannot be forced on the agent — no Claude Code mechanism compels a tool call, and
-    every "please onboard" directive is skippable (the agent will read code via any ungated path
-    instead). So the harness performs the one-time step itself: a cheap constant stub memory,
-    written *before the agent acts*, independent of which read tool it reaches for. This flips the
-    repo to "onboarded" so the gate settles into steady Serena-first mode; durable project memory
-    is a separate, confirmed cognee ingest via /astrojones:onboard.
-
-    Idempotent and best-effort: skips when the gate is disabled, outside a git repo, or already
-    onboarded; never raises into server startup.
-    """
-    if root is None or serena_gate.gate_disabled():
-        return
-    try:
-        rootp = Path(root).resolve()
-        if serena_gate.is_onboarded(rootp):
-            return
-        mem_dir = rootp / ".serena" / "memories"
-        mem_dir.mkdir(parents=True, exist_ok=True)
-        (mem_dir / "project_overview.md").write_text(_ONBOARD_STUB, encoding="utf-8")
-    except (OSError, ValueError):
-        return  # best-effort: a seeding failure must never block server startup
 
 
 # --------------------------------------------------------------------------- tools
@@ -377,11 +200,7 @@ def repo_context_relevant_files(
     task: Annotated[str, Field(description="Natural-language task description")],
     max_files: Annotated[int, Field(ge=1, le=50)] = 8,
 ) -> dict:
-    """Heuristically rank files relevant to a task (path/term matching).
-
-    This is NOT semantic search — for symbol-level relevance use Serena
-    (find_symbol / find_referencing_symbols).
-    """
+    """Heuristically rank files relevant to a task (path/term matching)."""
     root = git.repo_root()
     return context.relevant_files(root, task, max_files) if root else _no_repo()
 
@@ -421,16 +240,11 @@ def repo_read_range(
     start_line: Annotated[int, Field(ge=1, validation_alias=AliasChoices("start_line", "start"))] = 1,
     end_line: Annotated[int, Field(ge=1, validation_alias=AliasChoices("end_line", "end"))] = 200,
 ) -> dict:
-    """Read a bounded line range. Refuses secrets/binaries; blocks path traversal; line-capped.
-
-    Pre-onboarding it refuses *code* files (mirroring the native-Read gate) so onboarding cannot
-    be skipped via this tool; once the repo is onboarded it is the blessed precise-range reader.
-    """
+    """Read a bounded line range. Refuses secrets/binaries; blocks path traversal; line-capped."""
     root = git.repo_root()
     if not root:
         return _no_repo()
-    gated = _serena_read_gate(root, path)
-    return gated if gated is not None else context.read_range(root, path, start_line, end_line)
+    return context.read_range(root, path, start_line, end_line)
 
 
 @mcp.tool()
@@ -440,11 +254,10 @@ def repo_symbols_overview(
     ] = None,
     limit: Annotated[int, Field(ge=1, le=2000, description="Maximum symbols to return")] = 200,
 ) -> dict:
-    """Symbol map from the static tree-sitter index — no Serena launch, always current.
+    """Symbol map from the static tree-sitter index — no LSP launch, always current.
 
     The preferred first move for code orientation: names, kinds, spans, and nesting per
-    file (optionally scoped to a path prefix). Reserve serena_* for the semantic questions
-    the index cannot answer — references, implementations, diagnostics, renames.
+    file (optionally scoped to a path prefix).
     """
     root = git.repo_root()
     inp = symbols.SymbolsOverviewIn(path=path, limit=limit)
@@ -455,7 +268,7 @@ def repo_symbols_overview(
 def repo_impact_file(
     path: Annotated[str, Field(description="Repo-relative file path")],
 ) -> dict:
-    """Heuristic blast radius: dependents, test targets, risk. Confirm with Serena find_referencing_symbols."""
+    """Heuristic blast radius: dependents, test targets, risk."""
     root = git.repo_root()
     return impact.file_impact(root, path) if root else _no_repo()
 
@@ -490,7 +303,7 @@ def repo_health(
     Snapshots carry provenance (fresh vs cache) and a stale flag.
     """
     root = git.repo_root()
-    return health.run(root, only=check, refresh=refresh, gateway=_serena).model_dump() if root else _no_repo()
+    return health.run(root, only=check, refresh=refresh).model_dump() if root else _no_repo()
 
 
 @mcp.tool()
@@ -500,8 +313,8 @@ def repo_state() -> dict:
     The perception daemon runs cheap checks (lint/typecheck by default; tests opt-in) in the
     background as files change and keeps this snapshot fresh — so read it instead of calling
     repo_verify_changed / repo_health when you just want the latest known state cheaply; the
-    checks have already run. Returns ``verdicts`` (id/kind/ok/summary/ran_at), ``git``
-    (branch/head/dirty/conflicted), and ``serena_child_pid``. Falls back to a git-only baseline
+    checks have already run. Returns ``verdicts`` (id/kind/ok/summary/ran_at) and ``git``
+    (branch/head/dirty/conflicted). Falls back to a git-only baseline
     in the brief window before the daemon's first run.
     """
     root = git.repo_root()
@@ -702,122 +515,6 @@ def repo_deploy_logs(
         return _no_repo()
     p = Path(rootp)
     return deploy.logs(deploy.repo_name(p, None), run_id, tail, deploy.origin_owner(p, None))
-
-
-# ----------------------------------------------------------------- durable memory (cognee)
-
-
-@mcp.tool()
-async def mem_search(
-    query: Annotated[str, Field(description="Natural-language query against the memory graph")],
-    search_type: Annotated[
-        Literal["GRAPH_COMPLETION", "CHUNKS", "TEMPORAL", "CODING_RULES"], Field(description="Retrieval mode")
-    ] = "GRAPH_COMPLETION",
-    dataset: Annotated[str | None, Field(description="Dataset name; None = the user's default scope")] = None,
-    node_name: Annotated[
-        list[str] | None, Field(description="Restrict to these node_set tags (belongs_to_set filter)")
-    ] = None,
-    top_k: Annotated[int, Field(ge=1, le=50)] = 10,
-) -> dict:
-    """Recall from the durable memory graph (remote cognee)."""
-    inp = models.MemSearchIn(query=query, search_type=search_type, dataset=dataset, node_name=node_name, top_k=top_k)
-    return (await mem.search(inp, root=git.repo_root())).model_dump(exclude_none=True)
-
-
-@mcp.tool()
-async def mem_rules(
-    query: Annotated[str, Field(description="What rules to retrieve, e.g. 'python error handling'")],
-    top_k: Annotated[int, Field(ge=1, le=50)] = 10,
-    dataset: Annotated[str | None, Field(description="Dataset name; None = the repo's onboarded dataset")] = None,
-) -> dict:
-    """Retrieve distilled coding rules from memory (CODING_RULES search)."""
-    return (await mem.rules(query, top_k, dataset, root=git.repo_root())).model_dump(exclude_none=True)
-
-
-@mcp.tool()
-async def mem_remember(
-    text: Annotated[str, Field(description="The fact/observation to store durably")],
-    dataset: Annotated[
-        str | None,
-        Field(description="Target dataset name; None resolves via the conventions table (mem.resolve_dataset)"),
-    ] = None,
-    node_set: Annotated[list[str] | None, Field(description="Category tags, e.g. ['project_docs']")] = None,
-    metadata: Annotated[dict | None, Field(description="Optional key/value context folded into the text")] = None,
-) -> dict:
-    """Store one fact durably: fast /add, then background /cognify (never blocks on extraction)."""
-    inp = models.MemRememberIn(text=text, dataset=dataset, node_set=node_set, metadata=metadata)
-    return (await mem.remember(inp, root=git.repo_root())).model_dump(exclude_none=True)
-
-
-@mcp.tool()
-async def mem_ingest(  # noqa: PLR0913, PLR0917 -- mirrors MemIngestIn's field count 1:1
-    items: Annotated[list[str], Field(description="Curated documents to ingest")],
-    dataset: Annotated[
-        str | None, Field(description="Target dataset name; None resolves to the repo's onboarded dataset")
-    ] = None,
-    node_set: Annotated[list[str] | None, Field(description="Category tags applied to every item")] = None,
-    ontology_key: Annotated[
-        str | None, Field(description="pinned ontology key from mem_ontology; extraction uses this OWL vocabulary")
-    ] = None,
-    dry_run: Annotated[bool, Field(description="Only return the cost estimate; write nothing")] = False,
-    confirm: Annotated[bool, Field(description="Accept an over-limit estimated cost")] = False,
-) -> dict:
-    """Bulk-ingest curated items — cost-gated (refuses expensive runs unless confirm=true)."""
-    inp = models.MemIngestIn(
-        items=items,
-        dataset=dataset,
-        node_set=node_set,
-        ontology_key=ontology_key,
-        dry_run=dry_run,
-        confirm=confirm,
-    )
-    return (await mem.ingest(inp, root=git.repo_root())).model_dump(exclude_none=True)
-
-
-@mcp.tool()
-async def mem_stats(
-    dataset: Annotated[str, Field(description="Dataset name to report on")],
-) -> dict:
-    """Best-effort dataset stats (existence, pipeline status); honest about unsupported counts."""
-    inp = models.MemStatsIn(dataset=dataset)
-    return (await mem.stats(inp)).model_dump(exclude_none=True)
-
-
-@mcp.tool()
-async def mem_ontology(
-    individuals: Annotated[dict[str, str], Field(description="Mapping of individual name -> fixed type")],
-) -> dict:
-    """Generate + idempotently upload a NamedIndividual ontology; returns the paired extraction prompt."""
-    inp = models.MemOntologyIn(individuals=individuals)
-    return (await mem.ontology(inp)).model_dump(exclude_none=True)
-
-
-@mcp.tool()
-async def mem_doctor() -> dict:
-    """Cognee memory health: configured/reachable/authenticated + capture/heartbeat sentinels."""
-    return (await mem.doctor(root=git.repo_root())).model_dump(exclude_none=True)
-
-
-@mcp.tool()
-def repo_onboard_complete(
-    dataset: Annotated[str, Field(description="Cognee dataset the repo was ingested into")],
-    ontology_key: Annotated[str | None, Field(description="Ontology vocabulary pinned for the ingest")] = None,
-) -> dict:
-    """Record that this repo's durable cognee memory has been ingested (the /astrojones:onboard step).
-
-    Flips the persistent onboarding marker so the daemon/hooks skip re-onboarding; call this once,
-    after a confirmed mem_ingest, to make the ingest durable across sessions.
-    """
-    root = git.repo_root()
-    if not root:
-        return _no_repo()
-    paths.mark_cognee_onboarded(root, dataset=dataset, ontology_key=ontology_key)
-    return {
-        "ok": True,
-        "onboarded": paths.is_cognee_onboarded(root),
-        "dataset": dataset,
-        "path": str(paths.cognee_onboarded_file(root)),
-    }
 
 
 # ----------------------------------------------------------------------- resources
