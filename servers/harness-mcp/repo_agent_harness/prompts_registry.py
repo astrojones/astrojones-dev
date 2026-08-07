@@ -69,8 +69,8 @@ class PromptEntry:
 _DESCRIPTIONS: dict[str, str] = {
     "bugfix": (
         "Use when fixing a bug, diagnosing a failure, or chasing a stack "
-        "trace. Guides a safe, minimal-surface fix using Serena for navigation "
-        "and the harness tools for context and verification."
+        "trace. Guides a safe, minimal-surface fix using the harness tools "
+        "for navigation, context, and verification."
     ),
     "feature": (
         "Use when adding a new feature or capability. Guides a smallest-"

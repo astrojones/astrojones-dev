@@ -68,7 +68,7 @@ def file_impact(root: str, path: str) -> dict:
     notes = []
     if risk == "high":
         notes.append("matches a high-risk area (migrations/auth/payments/security/schema)")
-    notes.append("heuristic: references found by name; confirm with Serena find_referencing_symbols")
+    notes.append("heuristic: references found by name; confirm with repo_search_text / repo_symbols_overview")
 
     return {
         "path": path,
