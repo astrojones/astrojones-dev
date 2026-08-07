@@ -357,7 +357,7 @@ git commit -m "refactor: strip serena/cognee from cli, perception, context, scaf
 ### Task 5: Update plugin metadata + docs
 
 **Files:**
-- Modify: `.claude-plugin/plugin.json`, `README.md`, `AGENTS.md`, `CHANGELOG.md`, `servers/harness-mcp/repo_agent_harness/templates/mcp.json`, `servers/harness-mcp/pyproject.toml` (version only), `docker/test.sh`, `agents/{architect.md, explorer.md, implementer.md, reviewer.md, test-runner.md}`
+- Modify: `.claude-plugin/plugin.json`, `README.md`, `AGENTS.md`, `CHANGELOG.md`, `servers/harness-mcp/repo_agent_harness/templates/mcp.json`, `servers/harness-mcp/pyproject.toml` (version only), `docker/test.sh`, `docker/e2e_hooks.sh`, `docker/e2e_verify.py`, `servers/harness-mcp/repo_agent_harness/prompts/{implement.md, feature.md, bugfix.md}`, `agents/{architect.md, explorer.md, implementer.md, reviewer.md, test-runner.md}`
 
 **Interfaces:** None (documentation + metadata only).
 
@@ -403,6 +403,14 @@ Add at top:
 
 `docker/test.sh:70` runs `hooks/session_start.py` (deleted in Task 1) and asserts its output contains `'onboarded into durable memory'` (the nudge Task 3 Step 7 removes). Remove that invocation and assertion; fix the comment at L52. The rest of the E2E smoke test (safe-shell, secret-read, verify feedback) stays.
 
+- [ ] **Step 7b: docker/e2e_hooks.sh + e2e_verify.py — drop the onboarding-nudge scenario**
+
+`docker/e2e_hooks.sh:77-78` runs the `sessionstart-context` scenario and `docker/e2e_verify.py:120-123,157` hard-asserts the "yet onboarded into durable memory" nudge in the SessionStart context. The nudge is deleted (Task 3). Remove the `sessionstart-context` scenario from `e2e_hooks.sh` and the `check_sessionstart_context` check + its registry entry from `e2e_verify.py`. Also remove the `REPO_AGENT_HARNESS_NO_SERENA_GATE=1` env (L75) and the `COGNEE_BASE_URL`/`REPO_AGENT_HARNESS_RECALL_TIMEOUT_S` enqueue-path scenario (L81-84) — both reference deleted machinery.
+
+- [ ] **Step 7c: prompts/{implement.md, feature.md, bugfix.md} — drop Serena references**
+
+These are the SSOT for the workflow skills (bugfix/feature/implement). Remove the Serena mentions: `implement.md:48,66-67,237`, `feature.md:4`, `bugfix.md:6`. Replace with the harness-native surface (`repo_context_relevant_files`, `repo_search_*`, `repo_read_range`, `repo_symbols_overview`) + native search tools. Keep each prompt's workflow structure intact.
+
 - [ ] **Step 8: agents/*.md — rewrite the 5 bundled subagents**
 
 All 5 subagents reference the deleted `serena_*` tools. Rewrite each to use the harness-native surface (`repo_context_overview`, `repo_symbols_overview`, `repo_context_relevant_files`, `repo_impact_file`, `repo_read_range`, `repo_search_symbols` — verify the exact tool names in `server.py` before writing) plus native Read/Grep:
@@ -417,14 +425,14 @@ Remove all `serena_*` tool names (including edit ops like `replace_symbol_body` 
 - [ ] **Step 9: Sweep for stragglers**
 
 ```bash
-grep -rniE 'serena|serena_gate|serena_daemon|serena_tools|cognee|claude_mem|sync_ledger' README.md AGENTS.md CHANGELOG.md .claude-plugin/plugin.json servers/harness-mcp/repo_agent_harness/templates/ agents/ docker/test.sh | grep -v '^Binary'
+grep -rniE 'serena|serena_gate|serena_daemon|serena_tools|cognee|claude_mem|sync_ledger' README.md AGENTS.md CHANGELOG.md .claude-plugin/plugin.json servers/harness-mcp/repo_agent_harness/templates/ agents/ docker/ servers/harness-mcp/repo_agent_harness/prompts/ | grep -v '^Binary'
 ```
 Expected: no matches (or only intentionally-kept mentions like this CHANGELOG entry — adjust CHANGELOG phrasing to use past-tense "removed" language, which the sweep legitimately catches; verify each remaining hit is in the CHANGELOG's removed-notes).
 
 - [ ] **Step 10: Commit**
 
 ```bash
-git add .claude-plugin/plugin.json README.md AGENTS.md CHANGELOG.md servers/harness-mcp/pyproject.toml servers/harness-mcp/repo_agent_harness/templates/mcp.json docker/test.sh agents/
+git add .claude-plugin/plugin.json README.md AGENTS.md CHANGELOG.md servers/harness-mcp/pyproject.toml servers/harness-mcp/repo_agent_harness/templates/mcp.json docker/ agents/ servers/harness-mcp/repo_agent_harness/prompts/
 git commit -m "docs: update metadata, docs, subagents for serena/cognee removal; bump 4.0.0"
 ```
 
