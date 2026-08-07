@@ -1,7 +1,7 @@
 # Feature workflow
 
 1. **Orient** — `repo_context_overview` for languages, entrypoints, and important paths.
-2. **Find a comparable feature** already in the codebase and mirror its structure. In an unfamiliar area, dispatch the **`explorer`** subagent to locate it and return a reading list; in a familiar one, go direct with Serena + `repo_context_relevant_files`.
+2. **Find a comparable feature** already in the codebase and mirror its structure. In an unfamiliar area, dispatch the **`explorer`** subagent to locate it and return a reading list; in a familiar one, go direct with `repo_symbols_overview` + native search + `repo_context_relevant_files`.
 3. **Identify the files** involved: API/interface, domain/logic, and tests.
 4. **Implement the smallest vertical slice** that delivers value end-to-end.
 5. **Add or update tests** alongside the code.

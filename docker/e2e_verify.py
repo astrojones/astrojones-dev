@@ -23,11 +23,9 @@ Stdlib-only; run with the harness venv python.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import hashlib
 import json
 import os
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -117,33 +115,6 @@ def check_posttooluse_edit(lines: list[str], state_dir: Path, canary: str) -> li
     ]
 
 
-def check_sessionstart_context(lines: list[str], state_dir: Path, canary: str) -> list[Check]:
-    return [
-        ("hard", has(lines, "hook_started", "SessionStart"), "SessionStart hook lifecycle event in stream"),
-        ("hard", has(lines, "yet onboarded into durable memory"), "onboarding nudge injected as additionalContext"),
-        ("soft", has(lines, "Repo symbol map"), "symbol map section injected"),
-    ]
-
-
-def check_stop_capture(lines: list[str], state_dir: Path, canary: str) -> list[Check]:
-    db = state_dir / "brain" / "capture_queue.db"
-    rows = 0
-    if db.is_file():
-        # Plain connect (not mode=ro URI): the run is over so nothing writes, and a
-        # read-only open of a WAL database fails when a -wal file is left behind.
-        try:
-            with contextlib.closing(sqlite3.connect(db)) as conn:
-                rows = conn.execute(
-                    "SELECT COUNT(*) FROM capture_queue WHERE event = 'stop'"
-                ).fetchone()[0]
-        except sqlite3.Error as exc:
-            print(f"  WARN: capture_queue.db unreadable: {exc}")
-    return [
-        ("hard", rows >= 1, f"capture_queue.db has a 'stop' row (found {rows})"),
-        ("soft", has(lines, "hook_started", "Stop"), "Stop hook lifecycle event in stream"),
-    ]
-
-
 def check_userpromptsubmit_delta(lines: list[str], state_dir: Path, canary: str) -> list[Check]:
     return [
         ("hard", (state_dir / "perception_last_seen.json").is_file(), "perception_last_seen.json written"),
@@ -154,8 +125,6 @@ def check_userpromptsubmit_delta(lines: list[str], state_dir: Path, canary: str)
 SCENARIOS = {
     "pretooluse-deny": check_pretooluse_deny,
     "posttooluse-edit": check_posttooluse_edit,
-    "sessionstart-context": check_sessionstart_context,
-    "stop-capture": check_stop_capture,
     "userpromptsubmit-delta": check_userpromptsubmit_delta,
 }
 

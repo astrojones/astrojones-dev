@@ -45,8 +45,8 @@ Everything below operates under:
   empty/None/duplicate case. Never trust unvalidated input; never silently swallow an error
   that should surface. Guard clauses over deep nesting.
 - **Reuse before reinvent** — before writing anything new, search for an existing utility,
-  helper, fixture, or pattern (`repo_search_text`, Serena). The best code added here looks
-  like it was already here.
+  helper, fixture, or pattern (`repo_search_text`, `repo_search_files`, native `Grep`). The
+  best code added here looks like it was already here.
 
 ---
 
@@ -63,8 +63,8 @@ phase. Resolve all paths from the working root — never hardcode absolutes.
 
 1. Read the task file / parse the description / fetch the issue.
 2. Orient with `repo_context_overview` (languages, entrypoints, important paths).
-3. Activate Serena for symbol work; fall back to `repo_search_*` + `repo_read_range` (and
-   direct file/glob tools) if Serena is unavailable.
+3. Navigate symbols with `repo_symbols_overview`; locate code with `repo_search_*` +
+   `repo_read_range` (and direct file/glob tools).
 4. Read the repo's `CLAUDE.md`/`AGENTS.md` for conventions.
 
 ### 0.2 Blast radius
@@ -234,4 +234,4 @@ If a worktree was created in Phase 0, ask whether to keep it for follow-up or re
 - Swallowing errors / trusting unvalidated input.
 - Reinventing a utility or fixture that already exists.
 - Changing global linter config instead of scoping the fix.
-- Recursively reading the repo instead of using `repo_read_range` + Serena.
+- Recursively reading the repo instead of using `repo_read_range` + `repo_symbols_overview`.

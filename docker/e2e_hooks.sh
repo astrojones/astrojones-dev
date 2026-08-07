@@ -71,26 +71,16 @@ run_scenario pretooluse-deny 3 "" \
 
 echo "-- S2: posttooluse-edit (touched-path recording after a real Write)"
 run_scenario posttooluse-edit 3 "" \
-  "Use the Write tool to create notes.txt containing hello. Then reply with exactly: DONE" \
-  REPO_AGENT_HARNESS_NO_SERENA_GATE=1
+  "Use the Write tool to create notes.txt containing hello. Then reply with exactly: DONE"
 
-echo "-- S3: sessionstart-context (onboarding nudge injected at session start)"
-run_scenario sessionstart-context 1 "" "Reply with exactly: OK"
-
-echo "-- S4: stop-capture (Stop hook enqueues into the local capture queue)"
-# COGNEE_BASE_URL only arms the enqueue path — port 9 is unreachable by design; the
-# 1s recall timeout keeps session_start's (fail-open) recall attempt cheap.
-run_scenario stop-capture 1 "" "Reply with exactly: OK" \
-  COGNEE_BASE_URL=http://127.0.0.1:9 REPO_AGENT_HARNESS_RECALL_TIMEOUT_S=1
-
-echo "-- S5: userpromptsubmit-delta (perception digest from a pre-seeded failing snapshot)"
+echo "-- S3: userpromptsubmit-delta (perception digest from a pre-seeded failing snapshot)"
 # The last-seen marker is written whenever a perception snapshot exists at prompt time —
 # the seed guarantees that, so the hard check is deterministic; only the digest content
 # races the daemon and that check is soft in the verifier.
-S5_STATE=$E2E_ROOT/userpromptsubmit-delta/state
-mkdir -p "$S5_STATE/repos/$HASH"
+S3_STATE=$E2E_ROOT/userpromptsubmit-delta/state
+mkdir -p "$S3_STATE/repos/$HASH"
 printf '%s' '{"verdicts":[{"id":"tests","ok":false,"summary":"seeded failing check"}],"git":{"branch":"main","head":"deadbeef"}}' \
-  > "$S5_STATE/repos/$HASH/perception.json"
+  > "$S3_STATE/repos/$HASH/perception.json"
 run_scenario userpromptsubmit-delta 1 "" "Reply with exactly: OK"
 
 echo "-- e2e result: $PASS passed, $FAIL failed"

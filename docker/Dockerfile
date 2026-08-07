@@ -1,12 +1,10 @@
 # syntax=docker/dockerfile:1
 # Clean-room test harness for the astrojones plugin.
 #
-# Goal: a container with ONLY Claude Code + the astrojones plugin — no host config,
-# no cognee creds, no competing memory plugin — to prove the plugin works standalone
-# (MCP server auto-connects, safety hooks fire, session_start fails open without a
-# memory backend). This is the "does it actually work in a vanilla env?" test that the
-# host install — polluted with cognee-memory, lean-ctx, and 20+ other plugins — cannot
-# answer.
+# Goal: a container with ONLY Claude Code + the astrojones plugin — no host config or
+# extra plugins — to prove the plugin works standalone (MCP server auto-connects, safety
+# hooks fire). This is the "does it actually work in a vanilla env?" test that the host
+# install — polluted with many other plugins — cannot answer.
 #
 # Build:  docker build -t astrojones-test .
 #   Run:  docker run --rm astrojones-test                                                  # deterministic tests (free)
