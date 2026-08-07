@@ -27,15 +27,11 @@ _runnable = _SHIM.is_file() and (_BUNDLE_VENV.is_file() or shutil.which("uv") is
 pytestmark = pytest.mark.skipif(not _runnable, reason="no shim, bundle venv, or uv to run the harness")
 
 
-def _git_repo(path: Path, *, onboarded: bool) -> Path:
+def _git_repo(path: Path) -> Path:
     subprocess.run(["git", "init", "-q"], cwd=path, check=True)
     (path / "foo.py").write_text("x = 1\n")
     (path / "notes.md").write_text("# notes\n")
     (path / ".env").write_text("SECRET=1\n")
-    if onboarded:
-        mem = path / ".serena" / "memories"
-        mem.mkdir(parents=True)
-        (mem / "core.md").write_text("core\n")
     return path
 
 
@@ -62,33 +58,16 @@ def _read(repo: Path, name: str) -> dict:
     return {"tool_name": "Read", "tool_input": {"file_path": str(repo / name)}}
 
 
-def test_shim_denies_code_read_when_not_onboarded(tmp_path):
-    repo = _git_repo(tmp_path, onboarded=False)
-    assert _denied(_drive(repo, _read(repo, "foo.py")))
-
-
-def test_shim_denies_code_read_even_when_onboarded(tmp_path):
-    """Persistent Serena preference: code reads denied regardless of onboarding status."""
-    repo = _git_repo(tmp_path, onboarded=True)
-    assert _denied(_drive(repo, _read(repo, "foo.py")))
-
-
 def test_shim_allows_non_code_read(tmp_path):
-    repo = _git_repo(tmp_path, onboarded=False)
+    repo = _git_repo(tmp_path)
     assert not _denied(_drive(repo, _read(repo, "notes.md")))
 
 
 def test_shim_restores_secret_guard(tmp_path):
-    repo = _git_repo(tmp_path, onboarded=False)
+    repo = _git_repo(tmp_path)
     assert _denied(_drive(repo, _read(repo, ".env")))
 
 
 def test_shim_restores_bash_guard(tmp_path):
-    repo = _git_repo(tmp_path, onboarded=False)
+    repo = _git_repo(tmp_path)
     assert _denied(_drive(repo, {"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}}))
-
-
-def test_shim_env_escape_allows_code_read(tmp_path):
-    repo = _git_repo(tmp_path, onboarded=False)
-    decision = _drive(repo, _read(repo, "foo.py"), {"REPO_AGENT_HARNESS_NO_SERENA_GATE": "1"})
-    assert not _denied(decision)

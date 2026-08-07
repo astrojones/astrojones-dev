@@ -36,7 +36,7 @@ def _write_config(repo: Path, body: str, harness_home: Path) -> None:
 def test_defaults_when_no_config(repo):
     cfg = health.load_config(str(repo))
     ids = {c.id: c for c in cfg.checks}
-    assert set(ids) == {"lint", "typecheck", "tests", "worktree", "diagnostics", "ci"}
+    assert set(ids) == {"lint", "typecheck", "tests", "worktree", "ci"}
     assert ids["ci"].enabled is False, "the network check must be opt-in"
     assert cfg.config_error is None
 
@@ -45,7 +45,7 @@ def test_invalid_config_falls_back_to_defaults(repo, isolated_harness_home):
     _write_config(repo, "checks: [", isolated_harness_home)
     cfg = health.load_config(str(repo))
     assert cfg.config_error is not None
-    assert {c.id for c in cfg.checks} == {"lint", "typecheck", "tests", "worktree", "diagnostics", "ci"}
+    assert {c.id for c in cfg.checks} == {"lint", "typecheck", "tests", "worktree", "ci"}
     snap = health.run(str(repo), only="worktree")
     assert snap.config_error is not None
 
@@ -132,57 +132,6 @@ def test_ci_check_success(repo, monkeypatch, isolated_harness_home):
     assert check.ok is True
     assert "success" in check.summary
     assert "abc1234" in check.summary
-
-
-def test_diagnostics_skips_without_gateway(repo, isolated_harness_home):
-    _write_config(repo, "checks:\n  - id: diagnostics\n    kind: diagnostics\n", isolated_harness_home)
-    snap = health.run(str(repo))
-    (check,) = snap.checks
-    assert check.skipped is True
-    assert check.ok is None
-    assert "gateway" in check.summary
-    assert snap.ok is True
-
-
-# ------------------------------------------------------------------- in-flight surfacing
-
-
-class _FakeInFlightGateway:
-    """Stand-in gateway exposing the in_flight_snapshot surface (issue #26)."""
-
-    def __init__(self, entries):
-        self._entries = entries
-
-    def in_flight_snapshot(self):
-        return list(self._entries)
-
-    def call_from_thread(self, name: str, arguments: dict) -> object:
-        """Satisfies DiagnosticsGateway; the cheap test config never runs diagnostics."""
-        msg = "diagnostics not exercised by this fake"
-        raise NotImplementedError(msg)
-
-
-def test_in_flight_surfaces_stalled_call(repo, isolated_harness_home):
-    _write_config(repo, CHEAP_CONFIG, isolated_harness_home)
-    gw = _FakeInFlightGateway([{"tool": "serena_find_symbol", "cwd": str(repo), "elapsed_s": 130.0, "stalled": True}])
-    snap = health.run(str(repo), gateway=gw)
-    (call,) = snap.in_flight
-    assert call.tool == "serena_find_symbol"
-    assert call.cwd == str(repo)
-    assert call.elapsed_s == pytest.approx(130.0)
-    assert call.stalled is True
-
-
-def test_in_flight_empty_when_gateway_reports_none(repo, isolated_harness_home):
-    _write_config(repo, CHEAP_CONFIG, isolated_harness_home)
-    snap = health.run(str(repo), gateway=_FakeInFlightGateway([]))
-    assert snap.in_flight == []
-
-
-def test_in_flight_empty_without_gateway(repo, isolated_harness_home):
-    _write_config(repo, CHEAP_CONFIG, isolated_harness_home)
-    snap = health.run(str(repo))
-    assert snap.in_flight == []
 
 
 # ------------------------------------------------------------------- hook heartbeats
@@ -315,7 +264,7 @@ def test_concurrent_run_executes_checks_once(repo, monkeypatch):
     seen = threading.Lock()
     runs = []
 
-    def slow_check(_root, cfg, _gateway):
+    def slow_check(_root, cfg):
         with seen:
             runs.append(next(counter))
         time.sleep(0.05)  # widen the race window so siblings overlap
@@ -336,7 +285,7 @@ def test_invalidate_does_not_deadlock_with_run(repo, monkeypatch):
     health._CACHE.clear()
     health._CACHE_LOCKS.clear()
 
-    def quick_check(_root, cfg, _gateway):
+    def quick_check(_root, cfg):
         health.invalidate(str(repo))  # interleave invalidation from the locked section
         return CheckResult(id=cfg.id, kind=cfg.kind)
 

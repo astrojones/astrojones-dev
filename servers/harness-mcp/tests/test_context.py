@@ -19,17 +19,6 @@ def test_detect_languages_orders_by_count(repo):
     assert "TypeScript" in langs
 
 
-def test_serena_languages_maps_and_dedupes(repo):
-    """.ts/.tsx and .js all map to the typescript server (de-duplicated); .c maps to cpp."""
-    (repo / "a.ts").write_text("export const a = 1\n")
-    (repo / "b.js").write_text("const b = 2\n")
-    (repo / "c.c").write_text("int main(void){return 0;}\n")
-    keys = context.serena_languages(str(repo))
-    assert keys.count("typescript") == 1
-    assert "python" in keys
-    assert "cpp" in keys
-
-
 def test_overview_configured_tools_present(repo):
     ov = context.overview(str(repo))
     assert "configured_tools" in ov

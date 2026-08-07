@@ -62,7 +62,7 @@ def test_init_pin_embeds_sha_in_mcp_json(repo):
 def test_init_writes_mcp_json_with_single_server(repo):
     scaffold.init_repo(str(repo), spec=scaffold.harness_spec())
     cfg = _mcp_config(repo)
-    assert set(cfg["mcpServers"]) == {"repo-agent-harness"}, "serena is proxied through the harness now"
+    assert set(cfg["mcpServers"]) == {"repo-agent-harness"}
     args = cfg["mcpServers"]["repo-agent-harness"]["args"]
     spec = args[args.index("--from") + 1]
     assert spec.startswith("git+https://github.com/astrojones/astrojones")
@@ -94,18 +94,6 @@ def test_init_merges_existing_mcp_json(repo):
     assert cfg["mcpServers"]["serena"] == {"command": "custom"}, "existing entry must not be overwritten"
     assert "repo-agent-harness" in cfg["mcpServers"]
     assert any("repo-agent-harness" in m for m in res["merged"])
-
-
-def test_init_removes_harness_installed_serena_entry(repo):
-    old_entry = {
-        "command": "uvx",
-        "args": ["--from", "git+https://github.com/oraios/serena@abc123", "serena", "start-mcp-server"],
-    }
-    (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"serena": old_entry}}))
-    res = scaffold.init_repo(str(repo), spec=scaffold.harness_spec())
-    cfg = _mcp_config(repo)
-    assert "serena" not in cfg["mcpServers"]
-    assert any("serena" in r for r in res["removed"])
 
 
 # ---------------------------------------------------------------------------

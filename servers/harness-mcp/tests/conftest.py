@@ -11,9 +11,8 @@ def _run(args, cwd):
 
 # Env vars the harness reads at call time. When pytest runs inside a live harness session
 # (Claude Code with the plugin active), the session's own runtime config leaks into the test
-# process — e.g. REPO_AGENT_HARNESS_NO_SERENA_GATE=1 silently disables the capability gate and
-# flips refusal tests into connect attempts. Strip the whole family; tests that need one set
-# it explicitly via monkeypatch, which layers on top of this autouse fixture.
+# process. Strip the whole family; tests that need one set it explicitly via monkeypatch,
+# which layers on top of this autouse fixture.
 _LEAKY_ENV_PREFIXES = ("REPO_AGENT_HARNESS_", "COGNEE_")
 _LEAKY_ENV_VARS = ("CLAUDE_PROJECT_DIR", "CLAUDE_PLUGIN_ROOT")
 
