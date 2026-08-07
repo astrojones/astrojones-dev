@@ -26,7 +26,7 @@
 **Files:**
 - Delete: `servers/harness-mcp/repo_agent_harness/{serena_gate.py, serena_daemon.py, gateway.py, serena_tools.json, cognee_client.py, cognee_local.py, cognee_sync.py, cognee_local_summarize_prompt.txt, sync_ledger.py, capture.py, claude_mem_reader.py, mem.py}`
 - Delete: `hooks/session_start.py`
-- Delete: `skills/{astrojones-cognee-doctor, astrojones-graph-tune, astrojones-mem-ingest-wisely, onboard}/`
+- Delete: `skills/{astrojones-cognee-doctor, astrojones-graph-tune, astrojones-mem-ingest-wisely, onboard}/` (top-level symlinks) AND `servers/harness-mcp/repo_agent_harness/.agents/skills/{astrojones-cognee-doctor, astrojones-graph-tune, astrojones-mem-ingest-wisely}/` (the tracked skill bodies — these ship inside the hatchling wheel via `packages = ["repo_agent_harness"]`, so deleting only the symlinks leaves the cognee skills installed)
 - Delete: `.github/workflows/serena-update.yml` (weekly job that greps/seds the deleted `gateway.py` and runs the deleted `gateway-snapshot` subcommand — it would hard-fail every week)
 - Delete tests: `tests/{fake_cognee.py, fake_serena.py, test_cognee_client.py, test_cognee_local.py, test_cognee_sync.py, test_gateway.py, test_gateway_http.py, test_serena_stress.py, test_serena_stress_real.py, test_mem.py, test_claude_mem_reader.py}`
 - Modify: `servers/harness-mcp/pyproject.toml`, `hooks/hooks.json`
@@ -52,6 +52,9 @@ git rm servers/harness-mcp/repo_agent_harness/serena_gate.py \
        hooks/session_start.py \
        .github/workflows/serena-update.yml
 git rm -r skills/astrojones-cognee-doctor skills/astrojones-graph-tune skills/astrojones-mem-ingest-wisely skills/onboard
+git rm -r servers/harness-mcp/repo_agent_harness/.agents/skills/astrojones-cognee-doctor \
+          servers/harness-mcp/repo_agent_harness/.agents/skills/astrojones-graph-tune \
+          servers/harness-mcp/repo_agent_harness/.agents/skills/astrojones-mem-ingest-wisely
 git rm servers/harness-mcp/tests/fake_cognee.py \
        servers/harness-mcp/tests/fake_serena.py \
        servers/harness-mcp/tests/test_cognee_client.py \
