@@ -4,7 +4,7 @@
 
 **Goal:** Remove all serena proxying and cognee memory from the astrojones plugin (submodule at `astrojones/`), leaving a lean repo-harness: `repo_*` tools, safety hooks, AGENTS.md auto-harness, workflow skills.
 
-**Architecture:** Delete 11 serena/cognee modules plus 4 cognee/onboard skills and 11 test files; surgically strip imports, call-sites, and models in the surviving modules (`server.py`, `agent_hooks.py`, `cli.py`, `perception.py`, `context.py`, `scaffold.py`, `health.py`, `symbols.py`, `models.py`, `paths.py`); drop 4 dependencies from `pyproject.toml`; update metadata/docs; bump version to `4.0.0` (breaking change). Serena moves to a standalone daemon + shim owned by the personal layer (separate plan).
+**Architecture:** Delete 12 serena/cognee modules plus 4 cognee/onboard skills, 11 test files, and the serena-update workflow; surgically strip imports, call-sites, and models in the surviving modules (`server.py`, `agent_hooks.py`, `cli.py`, `perception.py`, `context.py`, `scaffold.py`, `health.py`, `symbols.py`, `models.py`, `paths.py`); drop 4 dependencies from `pyproject.toml`; update metadata/docs and the 5 bundled subagents; bump version to `4.0.0` (breaking change). Serena moves to a standalone daemon + shim owned by the personal layer (separate plan).
 
 **Tech Stack:** Python 3.13, FastMCP, pydantic, psutil, pyyaml, watchfiles, tree-sitter; ruff, ty, pytest. All line numbers verified against commit `7f24b78` (3.24.4).
 
@@ -13,19 +13,21 @@
 - No new dependencies. Only removals.
 - The `repo_*` MCP tool surface is unchanged, except deleting the 8 `mem_*` tools and `repo_onboard_complete`.
 - The PreToolUse/PostToolUse/UserPromptSubmit safety hooks keep working: safe-shell guard + secret-read guard + verify feedback. No serena read-gate, no cognee recall, no SessionStart hook.
-- Every task ends green: `cd servers/harness-mcp && uv run pytest && uv run ruff check . && uv run ty check`.
+- Per-task gate (Tasks 1–4): package importable + `ruff check`/`ty check` clean on the touched files. The full suite (`uv run pytest`) is intentionally red until Task 6 scrubs the tests; the suite goes fully green in Task 6 and stays green thereafter.
 - Version bump to `4.0.0` in both `pyproject.toml` and `.claude-plugin/plugin.json` (breaking).
 - `.serena` references in `deploy.py` `SKIP_DIRS` are kept — harmless, and the shim layer may still write `.serena/project.yml` per repo.
 - `capture_output=True` in `symbols.py` is a subprocess arg — NOT the `capture` module — leave it alone.
+- Stage files explicitly by path in every commit — never `git add -A` / `git add .` (repo AGENTS.md rule).
 
 ---
 
 ### Task 1: Delete serena/cognee modules, skills, tests, and dead deps
 
 **Files:**
-- Delete: `servers/harness-mcp/repo_agent_harness/{serena_gate.py, serena_daemon.py, gateway.py, serena_tools.json, cognee_client.py, cognee_local.py, cognee_sync.py, cognee_local_summarize_prompt.txt, sync_ledger.py, capture.py, claude_mem_reader.py}`
+- Delete: `servers/harness-mcp/repo_agent_harness/{serena_gate.py, serena_daemon.py, gateway.py, serena_tools.json, cognee_client.py, cognee_local.py, cognee_sync.py, cognee_local_summarize_prompt.txt, sync_ledger.py, capture.py, claude_mem_reader.py, mem.py}`
 - Delete: `hooks/session_start.py`
 - Delete: `skills/{astrojones-cognee-doctor, astrojones-graph-tune, astrojones-mem-ingest-wisely, onboard}/`
+- Delete: `.github/workflows/serena-update.yml` (weekly job that greps/seds the deleted `gateway.py` and runs the deleted `gateway-snapshot` subcommand — it would hard-fail every week)
 - Delete tests: `tests/{fake_cognee.py, fake_serena.py, test_cognee_client.py, test_cognee_local.py, test_cognee_sync.py, test_gateway.py, test_gateway_http.py, test_serena_stress.py, test_serena_stress_real.py, test_mem.py, test_claude_mem_reader.py}`
 - Modify: `servers/harness-mcp/pyproject.toml`, `hooks/hooks.json`
 
@@ -46,7 +48,9 @@ git rm servers/harness-mcp/repo_agent_harness/serena_gate.py \
        servers/harness-mcp/repo_agent_harness/sync_ledger.py \
        servers/harness-mcp/repo_agent_harness/capture.py \
        servers/harness-mcp/repo_agent_harness/claude_mem_reader.py \
-       hooks/session_start.py
+       servers/harness-mcp/repo_agent_harness/mem.py \
+       hooks/session_start.py \
+       .github/workflows/serena-update.yml
 git rm -r skills/astrojones-cognee-doctor skills/astrojones-graph-tune skills/astrojones-mem-ingest-wisely skills/onboard
 git rm servers/harness-mcp/tests/fake_cognee.py \
        servers/harness-mcp/tests/fake_serena.py \
@@ -63,7 +67,7 @@ git rm servers/harness-mcp/tests/fake_cognee.py \
 
 - [ ] **Step 2: Drop the 4 dead dependencies from `servers/harness-mcp/pyproject.toml`**
 
-Remove exactly these lines from the `dependencies` list (keep everything else):
+Remove exactly these 4 lines from the `dependencies` list (they are NOT contiguous in the file — `tree-sitter` and `tree-sitter-language-pack` sit between `httpx` and `claude-agent-sdk`; remove each line individually, keep everything else):
 
 ```toml
     "serena-agent @ git+https://github.com/oraios/serena@2449313c0d7427275c4c66aedff7d4881782f713",
@@ -108,7 +112,7 @@ Expected: FAILS with `ModuleNotFoundError` (gateway/cognee imports not yet strip
 - [ ] **Step 6: Commit**
 
 ```bash
-git add -A
+git add servers/harness-mcp/pyproject.toml servers/harness-mcp/repo_agent_harness/ hooks/ skills/ .github/workflows/ servers/harness-mcp/tests/
 git commit -m "refactor!: remove serena/cognee modules, skills, tests, deps"
 ```
 
@@ -145,7 +149,7 @@ Both functions (local cognee Docker fallback bring-up). Delete the whole pair.
 
 - [ ] **Step 4: Strip `_lifespan` (L111–178)**
 
-Remove: L127 `gateway.reap_stale_serena_children(root)`, L128 `_seed_serena_languages(root)`, L132 `_autoseed_onboarding(...)` (verify exact call line), L137 → `perception.Perception(root)` (drop `gateway=_serena`), L147–164 (the `warm_task` + cognee sync block: `sync = cognee_sync.CogneeSync(root)`, `local_task`, `cognee_runtime_enabled`, `get_client`, `_bring_up_local`, `start`), and teardown L175–178 (`_cancel(local_task)`, `sync.stop()`, `_serena.aclose()`).
+Remove: L127 `gateway.reap_stale_serena_children(root)`, L128 `_seed_serena_languages(root)`, L132 `_autoseed_onboarding(root)`, L137 → `perception.Perception(root)` (drop `gateway=_serena`), L147–164 (the `warm_task` + cognee sync block: `sync = cognee_sync.CogneeSync(root)`, `local_task`, `cognee_runtime_enabled`, `get_client`, `_bring_up_local`, `start`), and teardown L175–178 (`_cancel(local_task)`, `sync.stop()`, `_serena.aclose()`). Also rewrite the `_lifespan` docstring (L113–123) — it still describes Serena onboarding/reap/diagnostics; replace with a plain description of the watcher + perception startup.
 
 - [ ] **Step 5: Rewrite `_INSTRUCTIONS` (L181–216)**
 
@@ -153,7 +157,7 @@ Remove all serena_*/cognee/mem_* guidance (L183, 185–188, 192, 198, 204–206,
 
 - [ ] **Step 6: Fix `ToolTimeoutMiddleware` (L219–251)**
 
-Remove `gateway.tool_timeout()` (L241), `_serena.register_inflight` (L243), and `gateway.ToolTimeoutError` (L249). Inspect the middleware body: if it exists solely for serena's in-flight registry, delete the whole class and its registration; if it provides a generic timeout backstop for all tools, keep it with a plain `asyncio.TimeoutError` and a module-level `_TOOL_TIMEOUT_S` constant (default 300).
+The middleware is the generic timeout backstop for all `@mcp.tool` handlers (its docstring at L220–226 says so) — KEEP it. Remove `gateway.tool_timeout()` (L241), `_serena.register_inflight` (L243), and `gateway.ToolTimeoutError` (L249). Replace with a module-level `_TOOL_TIMEOUT_S = 300` constant and a plain `asyncio.TimeoutError`.
 
 - [ ] **Step 7: Delete proxied serena tools registration (L257–258)**
 
@@ -314,7 +318,7 @@ Delete `_is_harness_installed_serena` (L77–79) and the migration block in `_in
 
 - [ ] **Step 5: health.py — drop diagnostics + gateway**
 
-Delete module docstring serena sentence (L7). Delete `DiagnosticsGateway` protocol (L44–48). Delete `_tally_diagnostics`/`_count_diagnostics` (L182–208) and `_diagnostics_check` (L211–235). In `_run_check` (L248–252): drop the `gateway` param and the `diagnostics` branch, keep the duration stamp. Delete `_in_flight` (L320–332). In `_compute_snapshot`/`run` (L365–421): drop the `gateway` param everywhere, remove `in_flight=_in_flight(gateway)` (L386), fix docstrings. Scrub the `diagnostics` kind from `models.HealthCheckConfig` (kind enum) and any default `health.yml`/config that lists it — grep `diagnostics` beyond health.py to find them all.
+Delete module docstring serena sentence (L7). Delete `DiagnosticsGateway` protocol (L44–48). Delete `_tally_diagnostics`/`_count_diagnostics` (L182–208) and `_diagnostics_check` (L211–235). In `_run_check` (L248–252): drop the `gateway` param and the `diagnostics` branch, keep the duration stamp. Delete `_in_flight` (L320–332). In `_compute_snapshot`/`run` (L365–421): drop the `gateway` param everywhere, remove `in_flight=_in_flight(gateway)` (L386), fix docstrings. Scrub the `diagnostics` kind from these exact locations: `models.py:207` (`CheckKind` enum), `models.py:243-244` (`_default_checks()`), `defaults/health.yml:3,26`, `templates/agent/health.yml:3,14`, and the comment at `perception.py:36`.
 
 - [ ] **Step 6: symbols.py — docstring rewrite**
 
@@ -350,7 +354,7 @@ git commit -m "refactor: strip serena/cognee from cli, perception, context, scaf
 ### Task 5: Update plugin metadata + docs
 
 **Files:**
-- Modify: `.claude-plugin/plugin.json`, `README.md`, `AGENTS.md`, `CHANGELOG.md`, `servers/harness-mcp/repo_agent_harness/templates/mcp.json`, `servers/harness-mcp/pyproject.toml` (version only)
+- Modify: `.claude-plugin/plugin.json`, `README.md`, `AGENTS.md`, `CHANGELOG.md`, `servers/harness-mcp/repo_agent_harness/templates/mcp.json`, `servers/harness-mcp/pyproject.toml` (version only), `docker/test.sh`, `agents/{architect.md, explorer.md, implementer.md, reviewer.md, test-runner.md}`
 
 **Interfaces:** None (documentation + metadata only).
 
@@ -382,8 +386,8 @@ Add at top:
 ## [4.0.0] - 2026-08-07
 
 ### Removed (breaking)
-- Serena proxying: `serena_gate.py`, `serena_daemon.py`, `gateway.py`, `serena_tools.json`, the `serena-agent` pin.
-- Cognee durable memory: `cognee_client.py`, `cognee_local.py`, `cognee_sync.py`, `sync_ledger.py`, `capture.py`, `claude_mem_reader.py`, the `mem_*` tools, `repo_onboard_complete`, the `onboard` skill and the 3 cognee skills, the SessionStart recall hook.
+- Serena proxying: `serena_gate.py`, `serena_daemon.py`, `gateway.py`, `serena_tools.json`, the `serena-agent` pin, the `serena-update` workflow.
+- Cognee durable memory: `cognee_client.py`, `cognee_local.py`, `cognee_sync.py`, `sync_ledger.py`, `capture.py`, `claude_mem_reader.py`, `mem.py`, the `mem_*` tools, `repo_onboard_complete`, the `onboard` skill and the 3 cognee skills, the SessionStart recall hook.
 - Dependencies: `serena-agent`, `httpx`, `claude-agent-sdk`, `sqlmodel`.
 - The serena read-gate inside the PreToolUse hook (nudging now lives in the personal layer via `serena-hooks remind`).
 
@@ -392,18 +396,33 @@ Add at top:
 - Durable memory is owned by mempalace.
 ```
 
-- [ ] **Step 7: Sweep for stragglers**
+- [ ] **Step 7: docker/test.sh — drop the deleted-hook fire**
+
+`docker/test.sh:70` runs `hooks/session_start.py` (deleted in Task 1) and asserts its output contains `'onboarded into durable memory'` (the nudge Task 3 Step 7 removes). Remove that invocation and assertion; fix the comment at L52. The rest of the E2E smoke test (safe-shell, secret-read, verify feedback) stays.
+
+- [ ] **Step 8: agents/*.md — rewrite the 5 bundled subagents**
+
+All 5 subagents reference the deleted `serena_*` tools. Rewrite each to use the harness-native surface (`repo_context_overview`, `repo_symbols_overview`, `repo_context_relevant_files`, `repo_impact_file`, `repo_read_range`, `repo_search_symbols` — verify the exact tool names in `server.py` before writing) plus native Read/Grep:
+- `agents/architect.md` (refs at L49-56, 73, 85, 89, 101-104)
+- `agents/explorer.md` (L38-45, 77, 83, 88-90)
+- `agents/implementer.md` (L40-49, 71-74)
+- `agents/reviewer.md` (L31-34, 47-48, 51, 64)
+- `agents/test-runner.md` (L30-31)
+
+Remove all `serena_*` tool names (including edit ops like `replace_symbol_body` — those move outside the plugin). Keep each subagent's role, workflow, and output contract intact.
+
+- [ ] **Step 9: Sweep for stragglers**
 
 ```bash
-grep -rniE 'serena|serena_gate|serena_daemon|serena_tools|cognee|claude_mem|sync_ledger' README.md AGENTS.md CHANGELOG.md .claude-plugin/plugin.json servers/harness-mcp/repo_agent_harness/templates/ | grep -v '^Binary'
+grep -rniE 'serena|serena_gate|serena_daemon|serena_tools|cognee|claude_mem|sync_ledger' README.md AGENTS.md CHANGELOG.md .claude-plugin/plugin.json servers/harness-mcp/repo_agent_harness/templates/ agents/ docker/test.sh | grep -v '^Binary'
 ```
 Expected: no matches (or only intentionally-kept mentions like this CHANGELOG entry — adjust CHANGELOG phrasing to use past-tense "removed" language, which the sweep legitimately catches; verify each remaining hit is in the CHANGELOG's removed-notes).
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add .
-git commit -m "docs: update metadata and docs for serena/cognee removal; bump 4.0.0"
+git add .claude-plugin/plugin.json README.md AGENTS.md CHANGELOG.md servers/harness-mcp/pyproject.toml servers/harness-mcp/repo_agent_harness/templates/mcp.json docker/test.sh agents/
+git commit -m "docs: update metadata, docs, subagents for serena/cognee removal; bump 4.0.0"
 ```
 
 ---
@@ -434,7 +453,7 @@ Delete: `_serena_gate_blocks` tests, `_recall_section` tests (and their `fake_co
 
 - [ ] **Step 4: test_concurrency.py + test_tool_timeout.py — drop gateway fixtures**
 
-Remove `SerenaGateway`/gateway fixtures and serena-specific concurrency tests. Keep any generic tool-concurrency/timeout tests (update the timeout middleware expectations to the Task 2 Step 6 decision).
+Remove `SerenaGateway`/gateway fixtures and serena-specific concurrency tests. Keep the generic tool-concurrency/timeout tests — the timeout middleware survives (Task 2 Step 6 keeps it as the generic backstop), so update its expectations to the stripped implementation (plain `asyncio.TimeoutError`, no in-flight registry).
 
 - [ ] **Step 5: test_health.py — drop diagnostics + in-flight**
 
@@ -470,7 +489,6 @@ Expected: all green — pytest passes, ruff clean, ty clean.
 git add servers/harness-mcp/tests/
 git commit -m "test: scrub serena/cognee fixtures; suite green"
 ```
-
 ---
 
 ### Task 7: Manual smoke test
@@ -490,14 +508,20 @@ Expected: starts and terminates cleanly, no import errors, no serena/cognee log 
 
 - [ ] **Step 2: Hook smoke tests**
 
+`agent_hooks.main()` reads the event name from `argv[0]` and the payload from **stdin** (JSON). Pipe the payload in:
+
 ```bash
-cd /tmp && mkdir -p smoke-repo && cd smoke-repo && git init -q .
+cd /tmp && rm -rf smoke-repo && mkdir -p smoke-repo && cd smoke-repo && git init -q .
 printf 'SECRET=AKIAABCDEFGHIJKLMNOP\n' > .env
 printf 'echo hello\n' > script.sh
-uv run --project /Users/jonah/dev/agentism/astrojones/servers/harness-mcp python -m repo_agent_harness.agent_hooks pre_tool_use --tool Bash --command "echo hello"   # allowed
-uv run --project /Users/jonah/dev/agentism/astrojones/servers/harness-mcp python -m repo_agent_harness.agent_hooks pre_tool_use --tool Read --file_path .env   # denied (secret)
+HARNESS="uv run --project /Users/jonah/dev/agentism/astrojones/servers/harness-mcp python -m repo_agent_harness.agent_hooks"
+
+# allowed: safe shell command
+printf '{"tool_name":"Bash","tool_input":{"command":"echo hello"}}' | $HARNESS pre_tool_use
+# denied: secret-file read
+printf '{"tool_name":"Read","tool_input":{"file_path":".env"}}' | $HARNESS pre_tool_use
 ```
-Expected: first allowed, second denied by the secret guard. (Verify the actual CLI arg names from `agent_hooks.py` `main()` — adapt the invocation to match.)
+Expected: first allowed (no deny), second denied by the secret guard. (Match the exact payload keys to `agent_hooks.py` `main()` — read it first; `docker/test.sh:68-72` shows the working stdin pattern.)
 
 - [ ] **Step 3: Repo-state + health tools**
 
@@ -509,18 +533,25 @@ With the server running and a session context set, call `repo_context_overview`,
 find /tmp/smoke-repo -name '.serena' -o -name 'cognee*' | head
 grep -rniE 'cognee|serena_gate' /Users/jonah/dev/agentism/astrojones/servers/harness-mcp/repo_agent_harness/ | grep -v symbols.py
 ```
-Expected: no `.serena` dir, no cognee files; no source refs except `symbols.py`'s kept subprocess arg.
+Expected: no `.serena` dir, no cognee files; no source refs except `symbols.py`'s kept subprocess arg. Also confirm `docker/test.sh` no longer references `session_start.py` and no `agents/*.md` references `serena_` tools:
+
+```bash
+grep -n 'session_start' /Users/jonah/dev/agentism/astrojones/docker/test.sh
+grep -rn 'serena_' /Users/jonah/dev/agentism/astrojones/agents/
+```
+Expected: no matches.
 
 - [ ] **Step 5: Version + tag**
 
 ```bash
 git tag v4.0.0 && git log --oneline -8
 ```
-Expected: 6–7 feature commits since `7f24b78` (Tasks 1–6), tagged `v4.0.0`.
+Expected: 6–7 feature commits since `7f24b78` (Tasks 1–6), tagged `v4.0.0`. Note: `release.yml` derives the version and tags on push — if CI is enabled for this repo, the manual tag is provisional and CI's tag wins; do not force-push over it.
 
 - [ ] **Step 6: Fix anything surfaced; commit**
 
 ```bash
-git add -A && git commit -m "fix: smoke-test findings"
+git add <explicit paths of fixed files>
+git commit -m "fix: smoke-test findings"
 ```
 (Only if findings; otherwise skip.)
