@@ -1,6 +1,6 @@
 # Repository health — declarative checks behind `repo_health` / agent/tools/health.
 # Edit freely: this file defines what "healthy" means for THIS repo.
-# Kinds: lint | typecheck | test | git | diagnostics | ci | command
+# Kinds: lint | typecheck | test | git | ci | command
 #
 # Perception layer (auto background runs): set `auto: true` to have the perception daemon
 # re-run a check as files change (lint/typecheck are cheap & pure, so on by default; tests
@@ -23,8 +23,6 @@ checks:
     adaptive_factor: 12
   - id: worktree # branch, dirty flag, ahead/behind upstream, merge conflicts
     kind: git
-  - id: diagnostics # LSP diagnostics for changed files (requires the Serena gateway)
-    kind: diagnostics
   - id: ci # latest workflow run on the branch — NETWORK (gh); enable per repo
     kind: ci
     enabled: false

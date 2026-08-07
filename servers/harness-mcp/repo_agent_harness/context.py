@@ -147,31 +147,6 @@ def _harness_summary(rootp: Path) -> dict:
     }
 
 
-# Serena language-server keys for the display names in LANG_BY_EXT. Serena raises when asked
-# for symbols in a file whose language is not active, so .serena/project.yml must list every
-# language a repo contains. JavaScript uses the TypeScript server; C uses the C++ server.
-SERENA_LANG_KEY = {
-    "Python": "python",
-    "TypeScript": "typescript",
-    "JavaScript": "typescript",
-    "Go": "go",
-    "Rust": "rust",
-    "Ruby": "ruby",
-    "Java": "java",
-    "Kotlin": "kotlin",
-    "C": "cpp",
-    "C++": "cpp",
-    "C#": "csharp",
-    "PHP": "php",
-    "Swift": "swift",
-    "Shell": "bash",
-    "Scala": "scala",
-    "Dart": "dart",
-    "Elixir": "elixir",
-    "Lua": "lua",
-}
-
-
 def detect_languages(root: str) -> list[str]:
     """Display-name languages present in the repo, ordered by file count (descending)."""
     files = git.list_files(root)
@@ -181,21 +156,6 @@ def detect_languages(root: str) -> list[str]:
         if lang:
             counts[lang] = counts.get(lang, 0) + 1
     return [lang for lang, _ in sorted(counts.items(), key=lambda kv: -kv[1])]
-
-
-def serena_languages(root: str) -> list[str]:
-    """Serena language-server keys for every language the repo contains, de-duplicated.
-
-    Ordered by prevalence. Serena starts language servers only for the keys listed in
-    .serena/project.yml and raises on symbol extraction for files of any other language,
-    so this must cover all languages present, not just the dominant one.
-    """
-    keys: list[str] = []
-    for display in detect_languages(root):
-        key = SERENA_LANG_KEY.get(display)
-        if key and key not in keys:
-            keys.append(key)
-    return keys
 
 
 def overview(root: str) -> dict:
@@ -352,6 +312,5 @@ def relevant_files(root: str, task: str, max_files: int = 8) -> dict:
     return {
         "files": [{"path": f, "reason": "name/path matches task terms"} for _, f in picked],
         "confidence": confidence,
-        "method": "heuristic (path/term matching) — use Serena (find_symbol / "
-        "find_referencing_symbols) for symbol-level relevance",
+        "method": "heuristic (path/term matching) — ranks files whose name or path matches task terms",
     }

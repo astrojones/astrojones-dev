@@ -7,26 +7,21 @@ Every subcommand emits JSON and exits non-zero when a check reports ``ok: false`
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import sys
 from pathlib import Path
 
 from repo_agent_harness import (
     agent_hooks,
-    cognee_local,
     context,
     deploy,
     drift,
-    gateway,
     git,
     health,
     impact,
-    mem,
     policies,
     prompts_registry,
     scaffold,
-    serena_daemon,
     verify,
 )
 
@@ -54,21 +49,6 @@ def _hook(event: str) -> int:
         out = {}
     print(json.dumps(out))
     return 0
-
-
-def _cognee_local(action: str, *, confirm: bool) -> dict:
-    """Dispatch a `cognee-local` action to the lifecycle module (host-level, no repo needed)."""
-    if action == "nuke" and not confirm:
-        return {"ok": False, "reason": "nuke destroys the data volume; pass --confirm to proceed"}
-    actions = {
-        "up": cognee_local.up,
-        "status": cognee_local.status,
-        "stop": cognee_local.stop,
-        "down": cognee_local.down,
-        "logs": cognee_local.logs,
-        "nuke": cognee_local.nuke,
-    }
-    return actions[action]()
 
 
 def _deploy_status(limit: int, root: str) -> dict:
@@ -152,11 +132,6 @@ def main(argv: list[str] | None = None) -> int:
         help="refresh SKILL.md copies to match the harness (idempotent; --force overwrites in-sync files)",
     )
     sp.add_argument("--force", action="store_true", help="overwrite even in-sync files")
-    sub.add_parser(
-        "gateway-snapshot",
-        parents=[common],
-        help="(dev) launch the pinned Serena once and regenerate the packaged tool snapshot",
-    )
     sp = sub.add_parser("health", parents=[common])
     sp.add_argument("--check", default=None, help="run only this check id from agent/health.yml")
     sp.add_argument("--refresh", action="store_true", help="bypass the cache and re-run all checks")
@@ -202,34 +177,6 @@ def main(argv: list[str] | None = None) -> int:
         choices=["pre-tool-use", "post-tool-use", "user-prompt-submit", "session-start"],
     )
     sp = sub.add_parser(
-        "serena-daemon",
-        parents=[common],
-        help="Manage the worktree's shared Serena HTTP daemon (v1 lifecycle: explicit stop)",
-    )
-    sp.add_argument("action", choices=["status", "stop"])
-    sp = sub.add_parser(
-        "cognee-local",
-        parents=[common],
-        help="Manage the optional local cognee container (fallback when no remote is configured)",
-    )
-    sp.add_argument("action", choices=["up", "status", "stop", "down", "logs", "nuke"])
-    sp.add_argument("--confirm", action="store_true", help="Required for `nuke` (destroys the data volume)")
-    sp = sub.add_parser(
-        "migrate-serena-memories",
-        parents=[common],
-        help="One-shot: ship .serena/memories/*.md into cognee (project_docs + repo tag); originals stay",
-    )
-    sp.add_argument("--dataset", default=None, help="Target dataset (default: the repo's onboarded dataset)")
-    sp.add_argument("--dry-run", action="store_true", help="Only report files and cost estimate")
-    sp.add_argument("--confirm", action="store_true", help="Accept an over-limit estimated cost")
-    sp = sub.add_parser(
-        "memify",
-        parents=[common],
-        help="Manually trigger the background memify pass for a dataset (stamps the memify heartbeat)",
-    )
-    sp.add_argument("--dataset", required=True, help="Target cognee dataset name")
-    sp.add_argument("--node-name", default=None, help="Optional node-set label, echoed in the output for audit")
-    sp = sub.add_parser(
         "prompt",
         parents=[common],
         help="Inspect the per-repo workflow prompts SSOT (works without a git repo)",
@@ -269,11 +216,6 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(data, indent=2))
         return 1 if isinstance(data, dict) and data.get("ok") is False else 0
 
-    if args.cmd == "cognee-local":  # before _root(): host-level singleton, no repo needed
-        data = _cognee_local(args.action, confirm=args.confirm)
-        print(json.dumps(data, indent=2))
-        return 1 if isinstance(data, dict) and data.get("ok") is False else 0
-
     root = _root()
 
     dispatch = {
@@ -300,20 +242,6 @@ def main(argv: list[str] | None = None) -> int:
         "drift-check": lambda: drift.check_repo_drift(root),
         "sync-prompts": lambda: drift.sync_prompts(root, force=args.force),
         "health": lambda: health.run(root, only=args.check, refresh=args.refresh).model_dump(),
-        "gateway-snapshot": lambda: gateway.generate_snapshot(root),
-        "migrate-serena-memories": lambda: asyncio.run(
-            mem.migrate_serena_memories(root, args.dataset, dry_run=args.dry_run, confirm=args.confirm)
-        ).model_dump(exclude_none=True),
-        "memify": lambda: {
-            "ok": asyncio.run(mem.run_memify(root, args.dataset)),
-            "dataset": args.dataset,
-            "node_name": args.node_name,
-        },
-        "serena-daemon": lambda: (
-            serena_daemon.stop_daemon(root)
-            if args.action == "stop"
-            else {"ok": True, "state": serena_daemon.read_state(root), "transport": serena_daemon.serena_transport()}
-        ),
         "init": lambda: scaffold.init_repo(
             root,
             agents_md=args.agents_md,

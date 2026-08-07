@@ -3,8 +3,7 @@
 Checks are declared in ``agent/health.yml`` (agent-editable, like the policies)
 and define what "healthy" means for the repo. Built-in kinds reuse the
 verify/git cores; ``command`` runs a custom argv list (shell-policy gated);
-``ci`` (opt-in, network) asks ``gh`` for the latest workflow run;
-``diagnostics`` reports LSP diagnostics once the Serena gateway is available.
+``ci`` (opt-in, network) asks ``gh`` for the latest workflow run.
 
 Snapshots are cached per repo root with provenance (fresh vs cache) and a
 staleness probe over ``git status --porcelain`` so cached reads stay honest.
@@ -20,7 +19,6 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
 
 from pydantic import ValidationError
 
@@ -31,7 +29,6 @@ from repo_agent_harness.models import (
     HealthConfig,
     HealthSnapshot,
     HookHeartbeat,
-    InFlightCall,
 )
 
 # Optional dependency: keep the package importable in minimal (hook) environments.
@@ -39,13 +36,6 @@ yaml = importlib.import_module("yaml") if importlib.util.find_spec("yaml") else 
 
 CACHE_TTL_SECONDS = 300
 _MAX_OUTPUT = 4000
-
-
-class DiagnosticsGateway(Protocol):
-    """Anything that can synchronously forward a Serena tool call from a worker thread."""
-
-    def call_from_thread(self, name: str, arguments: dict) -> object:
-        """Forward one tool call and return the raw CallToolResult."""
 
 
 # ----------------------------------------------------------------------------- config
@@ -176,65 +166,6 @@ def _ci_check(root: str, cfg: HealthCheckConfig) -> CheckResult:
     )
 
 
-_DIAG_MAX_FILES = 10
-
-
-def _tally_diagnostics(node: object, counts: dict[str, int], bucket: str | None = None) -> None:
-    """Walk Serena's grouped diagnostics (path -> severity -> symbol -> results) counting leaves."""
-    if isinstance(node, dict):
-        for key, value in node.items():
-            lowered = str(key).lower()
-            next_bucket = "errors" if "error" in lowered else ("warnings" if "warn" in lowered else bucket)
-            _tally_diagnostics(value, counts, next_bucket)
-    elif isinstance(node, list) and bucket is not None:
-        counts[bucket] += len(node)
-
-
-def _count_diagnostics(result: object) -> dict[str, int]:
-    """Extract error/warning counts from a get_diagnostics_for_file CallToolResult, defensively."""
-    data = getattr(result, "structuredContent", None)
-    if not data:
-        for block in getattr(result, "content", None) or []:
-            text = getattr(block, "text", None)
-            if text:
-                try:
-                    data = json.loads(text)
-                except ValueError:
-                    data = None
-                break
-    counts = {"errors": 0, "warnings": 0}
-    if isinstance(data, dict):
-        _tally_diagnostics(data, counts)
-    return counts
-
-
-def _diagnostics_check(root: str, cfg: HealthCheckConfig, gateway: DiagnosticsGateway | None) -> CheckResult:
-    """LSP diagnostics for changed files via the Serena gateway; degrades to skip without it."""
-    if gateway is None or not hasattr(gateway, "call_from_thread"):
-        return CheckResult(id=cfg.id, kind=cfg.kind, skipped=True, summary="serena gateway unavailable")
-    changed = [f for f in git.changed_files(root) if (Path(root) / f).is_file()][:_DIAG_MAX_FILES]
-    if not changed:
-        return CheckResult(id=cfg.id, kind=cfg.kind, skipped=True, summary="no changed files to diagnose")
-    errors, warnings, details = 0, 0, []
-    for f in changed:
-        try:
-            result = gateway.call_from_thread("get_diagnostics_for_file", {"relative_path": f})
-        except Exception as exc:  # noqa: BLE001 - any gateway failure must degrade to a skip, never crash health
-            return CheckResult(id=cfg.id, kind=cfg.kind, skipped=True, summary=f"serena gateway error: {exc}")
-        counts = _count_diagnostics(result)
-        errors += counts["errors"]
-        warnings += counts["warnings"]
-        if counts["errors"] or counts["warnings"]:
-            details.append(f"{f}: {counts['errors']} error(s), {counts['warnings']} warning(s)")
-    return CheckResult(
-        id=cfg.id,
-        kind=cfg.kind,
-        ok=errors == 0,
-        summary=f"{errors} error(s), {warnings} warning(s) across {len(changed)} changed file(s)",
-        output="\n".join(details),
-    )
-
-
 _RUNNERS = {
     "lint": _from_verify,
     "typecheck": _from_verify,
@@ -245,10 +176,10 @@ _RUNNERS = {
 }
 
 
-def _run_check(root: str, cfg: HealthCheckConfig, gateway: DiagnosticsGateway | None) -> CheckResult:
+def _run_check(root: str, cfg: HealthCheckConfig) -> CheckResult:
     """Dispatch one check to its runner and stamp its duration."""
     start = time.monotonic()
-    result = _diagnostics_check(root, cfg, gateway) if cfg.kind == "diagnostics" else _RUNNERS[cfg.kind](root, cfg)
+    result = _RUNNERS[cfg.kind](root, cfg)
     return result.model_copy(update={"duration_ms": int((time.monotonic() - start) * 1000)})
 
 
@@ -317,21 +248,6 @@ def _fresh_cache_hit(root: str, refresh: bool, only: str | None) -> HealthSnapsh
     return entry.snapshot.model_copy(update={"provenance": "cache", "stale": False})
 
 
-def _in_flight(gateway: DiagnosticsGateway | None) -> list[InFlightCall]:
-    """Surface in-flight harness tool calls so a wedged call is visible (issue #26).
-
-    Duck-typed on ``in_flight_snapshot`` (mirrors the ``call_from_thread`` guard in
-    _diagnostics_check); degrades to an empty list without a gateway or on any failure.
-    """
-    snapshot_fn = getattr(gateway, "in_flight_snapshot", None)
-    if snapshot_fn is None:
-        return []
-    try:
-        return [InFlightCall(**entry) for entry in snapshot_fn()]
-    except Exception:  # noqa: BLE001 - the registry must never crash a health snapshot
-        return []
-
-
 def _hook_heartbeats(root: str) -> list[HookHeartbeat]:
     """Surface per-event hook/job heartbeats so a silently dead hook shim is visible.
 
@@ -365,7 +281,6 @@ def _hook_heartbeats(root: str) -> list[HookHeartbeat]:
 def _compute_snapshot(
     root: str,
     only: str | None,
-    gateway: DiagnosticsGateway | None,
 ) -> HealthSnapshot:
     """Run the selected checks and cache the snapshot (caller holds the per-root lock)."""
     status_hash = _status_hash(root)
@@ -375,7 +290,7 @@ def _compute_snapshot(
         known = ", ".join(c.id for c in cfg.checks)
         results = [CheckResult(id=only, kind="unknown", skipped=True, summary=f"no such check id; known: {known}")]
     else:
-        results = [_run_check(root, c, gateway) for c in selected]
+        results = [_run_check(root, c) for c in selected]
     snapshot = HealthSnapshot(
         ok=not any(r.ok is False for r in results),
         checks=results,
@@ -383,7 +298,6 @@ def _compute_snapshot(
         git_head=git.head(root),
         provenance="fresh",
         config_error=cfg.config_error,
-        in_flight=_in_flight(gateway),
         hook_heartbeats=_hook_heartbeats(root),
     )
     if only is None:
@@ -396,7 +310,6 @@ def run(
     *,
     only: str | None = None,
     refresh: bool = False,
-    gateway: DiagnosticsGateway | None = None,
 ) -> HealthSnapshot:
     """Produce a repository health snapshot from the repo's declarative checks.
 
@@ -404,7 +317,6 @@ def run(
         root: Repository root directory.
         only: Run a single check by id (bypasses the cache, result not cached).
         refresh: Force a re-run even when a fresh cached snapshot exists.
-        gateway: Serena gateway used by the diagnostics check (None degrades to skip).
 
     Returns:
         A HealthSnapshot; ok is False only when an executed check failed.
@@ -418,4 +330,4 @@ def run(
         hit = _fresh_cache_hit(root, refresh, only)
         if hit is not None:
             return hit
-        return _compute_snapshot(root, only, gateway)
+        return _compute_snapshot(root, only)

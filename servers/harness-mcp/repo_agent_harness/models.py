@@ -61,150 +61,7 @@ class CheckCommandIn(BaseModel):
     command: str = Field(..., description="The shell command to evaluate against policy")
 
 
-class MemSearchIn(BaseModel):
-    """Input model for mem_search."""
-
-    query: str = Field(..., description="Natural-language query against the memory graph")
-    search_type: Literal["GRAPH_COMPLETION", "CHUNKS", "TEMPORAL", "CODING_RULES"] = "GRAPH_COMPLETION"
-    dataset: str | None = Field(None, description="Dataset name; None = the user's default scope")
-    node_name: list[str] | None = Field(
-        None, description="Restrict to these node_set tags (belongs_to_set filter); None = the whole dataset"
-    )
-    top_k: int = Field(10, ge=1, le=50)
-
-
-class MemRememberIn(BaseModel):
-    """Input model for mem_remember."""
-
-    text: str = Field(..., description="The fact/observation to store durably")
-    dataset: str | None = Field(
-        None, description="Target dataset name; None resolves via the conventions table (mem.resolve_dataset)"
-    )
-    node_set: list[str] | None = Field(None, description="Category tags, e.g. ['project_docs']")
-    metadata: dict | None = Field(None, description="Optional key/value context folded into the text")
-
-
-class MemIngestIn(BaseModel):
-    """Input model for mem_ingest."""
-
-    items: list[str] = Field(..., description="Curated documents to ingest")
-    dataset: str | None = Field(None, description="Target dataset name; None resolves to the repo's onboarded dataset")
-    node_set: list[str] | None = Field(None, description="Category tags applied to every item")
-    ontology_key: str | None = Field(
-        None,
-        description="pinned ontology key from mem_ontology; extraction uses this OWL vocabulary",
-    )
-    dry_run: bool = Field(False, description="Only return the cost estimate; write nothing")
-    confirm: bool = Field(False, description="Accept an over-limit estimated cost")
-
-
-class MemStatsIn(BaseModel):
-    """Input model for mem_stats."""
-
-    dataset: str = Field(..., description="Dataset name to report on")
-
-
-class MemOntologyIn(BaseModel):
-    """Input model for mem_ontology."""
-
-    individuals: dict[str, str] = Field(..., description="Mapping of individual name -> fixed type")
-
-
-# ------------------------------------------------------------------- mem_* results
-
-# What a decoded cognee JSON body may be (transport-level payloads stay loosely typed;
-# everything the harness itself asserts about them is lifted into the typed fields below).
-Json = dict | list | str | int | float | bool | None
-
-
-class MemIngestEstimate(BaseModel):
-    """Cost pre-flight for a bulk ingest."""
-
-    items: int
-    estimated_tokens: int
-    estimated_chunks: int
-    estimated_cost_usd: float
-
-
-class MemError(BaseModel):
-    """Failure result shared by every mem_* operation (the error is the contract)."""
-
-    error: str
-    hint: str | None = None
-    status: int | None = None
-    available: list[str] | None = Field(None, description="known dataset names (unknown-dataset errors)")
-    estimate: MemIngestEstimate | None = Field(None, description="cost estimate (ingest refusals)")
-
-
-class MemSearchResult(BaseModel):
-    """mem_search / mem_rules success result."""
-
-    results: Json
-    search_type: str
-    dataset: str | None = None
-
-
-class MemRememberResult(BaseModel):
-    """mem_remember success result: the fact is stored; extraction continues in background."""
-
-    queued: bool = True
-    dataset: str
-    add_id: str | None = None
-
-
-class MemIngestResult(BaseModel):
-    """mem_ingest outcome: either a dry-run estimate or a completed ship."""
-
-    dataset: str
-    estimate: MemIngestEstimate
-    dry_run: bool = False
-    ingested: int = 0
-    fresh_dataset: bool | None = None
-    serial_first: bool | None = None
-
-
-class MemStatsResult(BaseModel):
-    """mem_stats: dataset existence + pipeline status; graph counts are upstream-unsupported."""
-
-    dataset: str
-    dataset_id: str | None = None
-    status: Json = None
-    node_counts_supported: bool = False
-    hint: str = "cognee exposes no census endpoint; graph counts unavailable upstream"
-
-
-class MemOntologyResult(BaseModel):
-    """mem_ontology: the uploaded (or already-present) ontology and its paired prompt."""
-
-    ontology_key: str
-    uploaded: bool
-    individuals: int
-    types: list[str]
-    prompt: str
-
-
-class MemMigrateResult(BaseModel):
-    """migrate-serena-memories outcome: which notes shipped where (originals stay put)."""
-
-    migrated: int
-    files: list[str]
-    dataset: str
-    node_set: list[str]
-    dry_run: bool = False
-    estimate: MemIngestEstimate | None = None
-
-
-class MemDoctorResult(BaseModel):
-    """mem_doctor verdict: checkable memory health + competing-capture sentinels."""
-
-    configured: bool
-    reachable: bool = False
-    authenticated: bool = False
-    datasets: list[str] | None = None
-    hints: list[str] = Field(default_factory=list)
-
-
-CheckKind = Literal["lint", "typecheck", "test", "git", "diagnostics", "ci", "command"]
+CheckKind = Literal["lint", "typecheck", "test", "git", "ci", "command"]
 
 
 class HealthCheckConfig(BaseModel):
@@ -240,7 +97,6 @@ def _default_checks() -> list[HealthCheckConfig]:
         HealthCheckConfig(id="typecheck", kind="typecheck", auto=True, adaptive_factor=8),
         HealthCheckConfig(id="tests", kind="test"),
         HealthCheckConfig(id="worktree", kind="git"),
-        HealthCheckConfig(id="diagnostics", kind="diagnostics"),
         HealthCheckConfig(id="ci", kind="ci", enabled=False),
     ]
 
@@ -286,7 +142,6 @@ class PerceptionSnapshot(BaseModel):
 
     verdicts: list[CheckVerdict] = Field(default_factory=list)
     git: GitState = Field(default_factory=GitState)
-    serena_child_pid: int | None = Field(None, description="live child Serena PID, if launched (topology signal)")
     generated_at: str = Field("", description="ISO-8601 UTC timestamp of this snapshot")
 
 
@@ -301,15 +156,6 @@ class CheckResult(BaseModel):
     output: str = ""
     command: str | None = None
     duration_ms: int = 0
-
-
-class InFlightCall(BaseModel):
-    """One harness tool call currently executing on the Serena gateway."""
-
-    tool: str
-    cwd: str
-    elapsed_s: float
-    stalled: bool = False
 
 
 class HookHeartbeat(BaseModel):
@@ -336,9 +182,6 @@ class HealthSnapshot(BaseModel):
     provenance: Literal["fresh", "cache"] = "fresh"
     stale: bool = Field(False, description="True when the worktree changed since this snapshot was generated")
     config_error: str | None = None
-    in_flight: list[InFlightCall] = Field(
-        default_factory=list, description="harness tool calls executing on the Serena gateway at snapshot time"
-    )
     hook_heartbeats: list[HookHeartbeat] = Field(
         default_factory=list, description="per-hook-event last-success stamps; last_success_at=None means never ran"
     )

@@ -74,11 +74,6 @@ def _install_agent_tree(root: Path, name: str, force: bool, result: dict) -> Non
         result["replaced" if existed else "created"].append(rel)
 
 
-def _is_harness_installed_serena(entry: dict) -> bool:
-    """True when a serena server entry matches the shape an older harness init wrote."""
-    return any("github.com/oraios/serena" in str(arg) for arg in entry.get("args") or [])
-
-
 def _install_mcp_json(root: Path, spec: str, result: dict) -> None:
     dest = root / ".mcp.json"
     template = json.loads((_templates() / "mcp.json").read_text().replace(_PLACEHOLDER_SPEC, spec))
@@ -88,11 +83,6 @@ def _install_mcp_json(root: Path, spec: str, result: dict) -> None:
         return
     cfg = json.loads(dest.read_text())
     servers = cfg.setdefault("mcpServers", {})
-    # migration: serena is proxied through the harness server now; drop the
-    # standalone entry an older init installed (user-customized entries are kept)
-    if "serena" in servers and _is_harness_installed_serena(servers["serena"]):
-        del servers["serena"]
-        result["removed"].append(".mcp.json#serena (proxied via repo-agent-harness now)")
     for key, value in template["mcpServers"].items():
         if key in servers:
             result["skipped"].append(f".mcp.json#{key}")

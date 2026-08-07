@@ -9,7 +9,7 @@ the delivery hooks (push) read that file.
 
 Best-effort and fail-open throughout: a perception failure must never crash the server,
 block a tool call, or stall the watcher. Checks run via ``anyio.to_thread`` so a slow
-language server never blocks the event loop (and never touches the Serena gateway lock).
+language server never blocks the event loop.
 """
 
 from __future__ import annotations
@@ -29,12 +29,10 @@ from repo_agent_harness.models import CheckVerdict, GitState, PerceptionSnapshot
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from repo_agent_harness.gateway import SerenaGateway
-
 LOG = logging.getLogger(__name__)
 
-# Only these check kinds are runnable in the background via verify.run_kind; git/diagnostics/
-# ci/command auto-running is out of scope for v1 (git state is always computed regardless).
+# Only these check kinds are runnable in the background via verify.run_kind; git/ci/command
+# auto-running is out of scope for v1 (git state is always computed regardless).
 _RUNNABLE_KINDS = {"lint", "typecheck", "test"}
 # Quiet window after a change burst before refreshing, on top of the watcher's own debounce —
 # coalesces a flurry of edits into a single check pass.
@@ -85,10 +83,9 @@ def current_state(root: str) -> dict:
 class Perception:
     """Owns the per-worktree perception loop: debounce changes, run checks, write the snapshot."""
 
-    def __init__(self, root: str, gateway: SerenaGateway | None = None) -> None:
-        """Bind to ``root`` (resolved) and the optional Serena gateway (for the child-PID signal)."""
+    def __init__(self, root: str) -> None:
+        """Bind to ``root`` (resolved)."""
         self.root = str(Path(root).resolve())
-        self._gateway = gateway
         self._dirty = asyncio.Event()
         self._stop = asyncio.Event()
         self._lock = asyncio.Lock()
@@ -158,7 +155,6 @@ class Perception:
             snapshot = PerceptionSnapshot(
                 verdicts=[self._verdicts[k] for k in sorted(self._verdicts)],
                 git=await to_thread.run_sync(_git_state, self.root),
-                serena_child_pid=getattr(self._gateway, "_child_pid", None),
                 generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
             )
             await to_thread.run_sync(self._write, snapshot)

@@ -309,8 +309,8 @@ def main(argv: list[str] | None = None) -> int:
     """Lightweight hook entry: ``python -m repo_agent_harness.agent_hooks <event>``.
 
     The plugin's PreToolUse shim calls this instead of ``repo-agent-harness hook`` so it imports
-    only this module (and git/policies/secrets), not the full CLI graph (gateway,
-    health, verify, …) — ~40ms vs ~600ms per tool call. Reads the event JSON on stdin, prints the
+    only this module (and git/policies/secrets), not the full CLI graph (health,
+    verify, …) — ~40ms vs ~600ms per tool call. Reads the event JSON on stdin, prints the
     decision JSON, routing through ``dispatch`` (shared with ``cli._hook``) so both entries stamp
     heartbeats. Fail-open by contract: any error prints an empty response and exits 0.
     """

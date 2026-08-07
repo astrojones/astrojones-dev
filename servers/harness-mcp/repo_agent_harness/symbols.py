@@ -1,16 +1,14 @@
 """Static symbol index: tree-sitter walk of tracked source files, persisted per worktree.
 
-Explorers navigate from THIS index instead of launching Serena — the LSP stays reserved for
-semantic operations (references, implementations, diagnostics, renames), which removes the
-symbol-overview traffic from Serena's hot path (the June parallel-subagent wedges). Same
-philosophy as the ``serena_tools.json`` static snapshot: precomputed structure, zero
-processes at query time.
+The static index is the primary symbol source: explorers navigate from it instead of
+launching a language server, so symbol-overview traffic never touches an LSP hot path.
+The LSP stays reserved for semantic operations (references, implementations, diagnostics,
+renames).
 
 Freshness is lazy-by-mtime: every query re-parses only the files whose mtime differs from
 the stored record (a tree-sitter parse is milliseconds per file), so results are always
 current without a background daemon. The index persists to
-``repo_state_dir(root)/symbols.json`` and doubles as the input for the Phase-3 cognee code
-bridge — one indexer, two consumers.
+``repo_state_dir(root)/symbols.json``.
 """
 
 from __future__ import annotations
