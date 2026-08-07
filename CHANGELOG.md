@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.0.0] - 2026-08-07
+
+### Removed (breaking)
+- Serena proxying: `serena_gate.py`, `serena_daemon.py`, `gateway.py`, `serena_tools.json`, the `serena-agent` pin, the `serena-update` workflow.
+- Cognee durable memory: `cognee_client.py`, `cognee_local.py`, `cognee_sync.py`, `sync_ledger.py`, `capture.py`, `claude_mem_reader.py`, `mem.py`, the `mem_*` tools, `repo_onboard_complete`, the `onboard` skill and the 3 cognee skills, the SessionStart recall hook.
+- Dependencies: `serena-agent`, `httpx`, `claude-agent-sdk`, `sqlmodel`.
+- The serena read-gate inside the PreToolUse hook (nudging now lives in the personal layer via `serena-hooks remind`).
+
+### Notes
+- Serena is now a standalone daemon (`serena start-project-server`) managed by the personal layer; the MCP shim surfaces read-only `serena_*` tools from outside this plugin.
+- Durable memory is owned by mempalace.
+
 ## Unreleased
 
 ### Changed

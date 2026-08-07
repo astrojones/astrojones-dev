@@ -23,13 +23,12 @@ setup.
 ## What you get
 
 - **A bundled, auto-connecting MCP server** — deterministic `repo_*` tools (overview, status,
-  search, precise range reads, impact, diff, change-verification, health, bootstrap) instead
-  of raw shell.
-- **Serena, proxied** through the same server as `serena_*` tools for semantic symbol
-  navigation and editing — find definitions, references, call sites; edit by symbol, not by
-  line guesswork.
-- **Zero-footprint by default** — opening a repo writes no harness files into it (serena keeps
-  its symbol index under `.serena/`, which it gitignores). The bundled server
+  search, symbol overviews, precise range reads, impact, diff, change-verification, health,
+  bootstrap) instead of raw shell.
+- **Static symbol navigation** — `repo_symbols_overview` names/kinds/nesting from the tree-sitter
+  index, instant and without an LSP launch; combine with native search to find definitions,
+  references, and call sites.
+- **Zero-footprint by default** — opening a repo writes no harness files into it. The bundled server
   (tools, an always-read `instructions` guide, and the workflow prompts) is everything Claude
   Code needs. Materialize the on-disk harness (`agent/` policies + tools, an `AGENTS.md` guide)
   only on demand with `repo_bootstrap` / `/harness-init` — for per-repo customization or
@@ -65,8 +64,9 @@ as **prompts** (the single source of truth), exposed via `@mcp.prompt()` (Claude
 
 ## The discipline the harness expects
 
-Orient with `repo_context_overview`; locate with Serena; read precise ranges (never dump whole
-files); check blast radius with `repo_impact_file` before a cross-file edit; edit small; then
+Orient with `repo_context_overview`; locate with `repo_symbols_overview` + native search; read
+precise ranges (never dump whole files); check blast radius with `repo_impact_file` before a
+cross-file edit; edit small; then
 run `repo_verify_changed` (narrow lint/typecheck/tests for what changed, not the whole suite).
 Raw shell is policy-bounded — destructive commands and secret reads are denied with an
 actionable reason.

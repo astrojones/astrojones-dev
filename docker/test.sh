@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Clean-room smoke test for the astrojones plugin. No cognee creds, no host config.
+# Clean-room smoke test for the astrojones plugin. No host config.
 #
 # Layer 1 (deterministic, free):
 #   1. PreToolUse hook denies a dangerous command (proves: python3 present, shim resolves,
@@ -46,13 +46,11 @@ DEC=$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/foo"
 echo "  hook decision: $DEC"
 echo "$DEC" | grep -q '"permissionDecision":[[:space:]]*"deny"' && ok "hook denies rm -rf" || no "hook did not deny rm -rf"
 
-echo; echo "### TEST 1b: all 4 hooks fire + return valid JSON + exit 0 (fail-open contract)"
+echo; echo "### TEST 1b: remaining hooks fire + return valid JSON + exit 0 (fail-open contract)"
 # Each hook is invoked exactly as Claude Code does — `python3 $PLUGIN/hooks/<name>.py`
 # with the event JSON on stdin — and must: exit 0, emit valid JSON, stay under the 10s
-# budget. session_start specifically must fail open with no cognee creds: recall contributes
-# nothing, leaving the deterministic onboarding nudge (fresh container = never onboarded).
-# post_tool_use must emit its verify nudge. This is the regression check that the hook
-# layer — which we put a lot of thought into — keeps working in a vanilla env.
+# budget. post_tool_use must emit its verify nudge. This is the regression check that the
+# hook layer — which we put a lot of thought into — keeps working in a vanilla env.
 fire_hook() {
   file="$1"; payload="$2"; expect="$3"
   OUT=$(printf '%s' "$payload" | "$PY" "$PLUGIN/hooks/$file" 2>/tmp/he); RC=$?
@@ -67,7 +65,6 @@ fire_hook() {
   fi
 }
 cd "$PLUGIN" || exit 1
-fire_hook session_start.py      '{"hook_event_name":"SessionStart","cwd":"'"$PLUGIN"'","source":"startup"}' 'onboarded into durable memory'
 fire_hook pre_tool_use.py       '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}' '^{}$'
 fire_hook post_tool_use.py      '{"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"'"$PLUGIN"'/README.md","old_string":"a","new_string":"b"},"tool_response":{"success":true}}' 'repo_verify_changed'
 fire_hook user_prompt_submit.py '{"hook_event_name":"UserPromptSubmit","prompt":"fix the bug in app.py"}' ''

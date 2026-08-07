@@ -27,10 +27,7 @@ model: inherit
 color: green
 tools:
   - mcp__plugin_astrojones_repo-agent-harness__repo_verify_changed
-  - mcp__plugin_astrojones_repo-agent-harness__serena_get_diagnostics_for_file
-  - mcp__plugin_astrojones_repo-agent-harness__serena_get_symbols_overview
-  - mcp__plugin_astrojones_repo-agent-harness__serena_find_symbol
-  - mcp__plugin_astrojones_repo-agent-harness__serena_initial_instructions
+  - mcp__plugin_astrojones_repo-agent-harness__repo_symbols_overview
   - mcp__plugin_astrojones_repo-agent-harness__repo_read_range
   - mcp__plugin_astrojones_repo-agent-harness__repo_search_text
   - Bash
@@ -47,16 +44,13 @@ source code.
 ## Tools
 
 `repo_verify_changed` is your primary instrument — lint + typecheck + test scoped to the changed
-files. To inspect a failure, navigate by symbol with Serena (`serena_get_diagnostics_for_file`,
-`serena_get_symbols_overview`, `serena_find_symbol`) and the harness (`repo_read_range`,
-`repo_search_text`); use `Bash` for the harness CLI (`agent/tools/test-changed`) when the MCP verify
-tool isn't enough.
+files. To inspect a failure, navigate by symbol (`repo_symbols_overview`) and the harness
+(`repo_read_range`, `repo_search_text`); use `Bash` for the harness CLI (`agent/tools/test-changed`)
+when the MCP verify tool isn't enough.
 
-Serena-first navigation and the `Read`-until-onboarded gate are enforced globally by the harness
-hook — your first action on a code task is `serena_initial_instructions`. Harness tools are
+Harness tools are
 `mcp__plugin_astrojones_repo-agent-harness__*`; on "tool not found / no schema" call `ToolSearch`
-with `select:<exact-tool-name>` and retry. Serena launches lazily on first call — an initial slow
-call or one retry is expected.
+with `select:<exact-tool-name>` and retry.
 
 Method:
 1. Run `repo_verify_changed` (lint + typecheck + test, scoped to changed files).

@@ -37,16 +37,7 @@ description: |
 model: inherit
 color: magenta
 tools:
-  - mcp__plugin_astrojones_repo-agent-harness__serena_get_symbols_overview
-  - mcp__plugin_astrojones_repo-agent-harness__serena_find_symbol
-  - mcp__plugin_astrojones_repo-agent-harness__serena_find_referencing_symbols
-  - mcp__plugin_astrojones_repo-agent-harness__serena_get_diagnostics_for_file
-  - mcp__plugin_astrojones_repo-agent-harness__serena_initial_instructions
-  - mcp__plugin_astrojones_repo-agent-harness__serena_onboarding
-  - mcp__plugin_astrojones_repo-agent-harness__serena_replace_symbol_body
-  - mcp__plugin_astrojones_repo-agent-harness__serena_insert_after_symbol
-  - mcp__plugin_astrojones_repo-agent-harness__serena_insert_before_symbol
-  - mcp__plugin_astrojones_repo-agent-harness__serena_rename_symbol
+  - mcp__plugin_astrojones_repo-agent-harness__repo_symbols_overview
   - mcp__plugin_astrojones_repo-agent-harness__repo_read_range
   - mcp__plugin_astrojones_repo-agent-harness__repo_search_text
   - mcp__plugin_astrojones_repo-agent-harness__repo_search_files
@@ -68,18 +59,14 @@ code for the files assigned to you, and nothing outside that set.
 
 ## Tools
 
-Edit by symbol where it fits: prefer `serena_replace_symbol_body`, `serena_insert_after_symbol` /
-`serena_insert_before_symbol`, and `serena_rename_symbol` over line-based `Edit`. `Edit`/`Write`
-remain for new test files and non-symbol changes; `Bash` runs tests (`agent/tools/test-changed`)
-and the harness toolchain. Read by symbol — `serena_get_symbols_overview` then targeted
-`serena_find_symbol` bodies and narrow `repo_read_range`, never a whole-file dump.
+`Edit`/`Write` make the edits (locate the target region first with `repo_symbols_overview` +
+`repo_read_range`, or native `Grep`/`Read`); `Bash` runs tests (`agent/tools/test-changed`)
+and the harness toolchain. Read by symbol — `repo_symbols_overview` then targeted
+`repo_read_range` spans, never a whole-file dump.
 
-Serena-first navigation and the `Read`-until-onboarded gate are enforced globally by the harness
-hook — your first action on a code task is `serena_initial_instructions` (and `serena_onboarding`
-once per repo if it reports not onboarded). Harness tools are
+Harness tools are
 `mcp__plugin_astrojones_repo-agent-harness__*`; on "tool not found / no schema" call `ToolSearch`
-with `select:<exact-tool-name>` and retry. Serena launches lazily on first call — an initial slow
-call or one retry is expected.
+with `select:<exact-tool-name>` and retry.
 
 ## Methodology (hard gate)
 
@@ -100,11 +87,10 @@ For each behavior:
 ## Working method
 
 1. **Orient** — read the assignment, file list, and acceptance criteria you were given.
-   Use Serena (`serena_get_symbols_overview`, `serena_find_symbol`,
-   `serena_find_referencing_symbols`) and `repo_read_range` to read only what you need.
+   Use `repo_symbols_overview` and `repo_read_range` to read only what you need.
    Never dump whole files.
 2. **Reuse before reinvent** — search for an existing utility, helper, fixture, or pattern
-   that already does it (`repo_search_text`, Serena). The best code here looks like it was
+   that already does it (`repo_search_text`, `Grep`). The best code here looks like it was
    already here — match the surrounding style, naming, and test conventions.
 3. **Stay in your lane** — edit only the files you were assigned. If you discover you need
    a file outside your set, stop and report it rather than editing it (another stream may
